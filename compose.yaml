@@ -56,7 +56,7 @@ services:
       S3_INTERNAL_USE_SSL: "false"
       S3_PUBLIC_USE_SSL: "false"
     ports:
-      - "8080:8080"
+      - "127.0.0.1:${API_HOST_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy

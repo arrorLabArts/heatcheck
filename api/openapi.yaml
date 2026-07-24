@@ -6,6 +6,8 @@ info:
     API for HeatCheck challenges, proof clips, voting, moderation, and
     copyright workflows. All timestamps use RFC 3339 UTC values.
 servers:
+  - url: https://heatcheck.dogi.watch
+    description: Production
   - url: http://localhost:8080
     description: Local development
 tags:

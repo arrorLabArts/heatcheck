@@ -53,6 +53,7 @@ The API applies pending embedded migrations and creates the configured media buc
 ## Vultr Deployment
 
 The `S3_*` variables configure an S3-compatible object-storage protocol. They do not require AWS.
+The production API base URL is `https://heatcheck.dogi.watch`.
 
 ### MinIO on the Vultr VPS
 
