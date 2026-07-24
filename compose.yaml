@@ -1,0 +1,68 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: heatcheck
+      POSTGRES_USER: heatcheck
+      POSTGRES_PASSWORD: heatcheck
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U heatcheck -d heatcheck"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: heatcheck
+      MINIO_ROOT_PASSWORD: heatcheck-local-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 heatcheck heatcheck-local-secret; do sleep 1; done
+        mc mb --ignore-existing local/heatcheck-clips
+
+  api:
+    build:
+      context: .
+    environment:
+      APP_ENV: development
+      PORT: "8080"
+      DATABASE_URL: postgres://heatcheck:heatcheck@postgres:5432/heatcheck?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173
+      BOOTSTRAP_ADMIN_EMAILS: contact@ciphervybe.com
+      MINIMUM_AGE: "18"
+      S3_ENDPOINT: minio:9000
+      S3_PUBLIC_ENDPOINT: localhost:9000
+      S3_ACCESS_KEY: heatcheck
+      S3_SECRET_KEY: heatcheck-local-secret
+      S3_BUCKET: heatcheck-clips
+      S3_REGION: us-east-1
+      S3_INTERNAL_USE_SSL: "false"
+      S3_PUBLIC_USE_SSL: "false"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:
+  minio-data:

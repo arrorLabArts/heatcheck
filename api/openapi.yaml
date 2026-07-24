@@ -1,0 +1,1739 @@
+openapi: 3.1.0
+info:
+  title: HeatCheck Public API
+  version: 0.1.0
+  description: |
+    API for HeatCheck challenges, proof clips, voting, moderation, and
+    copyright workflows. All timestamps use RFC 3339 UTC values.
+servers:
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: System
+  - name: Policies
+  - name: Authentication
+  - name: Challenges
+  - name: Media
+  - name: Submissions
+  - name: Safety
+  - name: Copyright
+  - name: Administration
+paths:
+  /healthz:
+    get:
+      tags: [System]
+      operationId: health
+      responses:
+        "200":
+          description: Process is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+  /readyz:
+    get:
+      tags: [System]
+      operationId: readiness
+      responses:
+        "200":
+          description: Service dependencies are ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/policies:
+    get:
+      tags: [Policies]
+      operationId: listCurrentPolicies
+      responses:
+        "200":
+          description: Current policy documents.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Policy"
+  /v1/policies/{kind}:
+    parameters:
+      - $ref: "#/components/parameters/PolicyKind"
+    get:
+      tags: [Policies]
+      operationId: getCurrentPolicy
+      responses:
+        "200":
+          description: Current policy document.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyEnvelope"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/auth/register:
+    post:
+      tags: [Authentication]
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+                - handle
+                - display_name
+                - date_of_birth
+                - policy_acceptances
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 10
+                  maxLength: 128
+                  writeOnly: true
+                handle:
+                  type: string
+                  pattern: "^[a-z0-9_]{3,24}$"
+                display_name:
+                  type: string
+                  minLength: 1
+                  maxLength: 60
+                date_of_birth:
+                  type: string
+                  format: date
+                policy_acceptances:
+                  type: array
+                  minItems: 1
+                  items:
+                    $ref: "#/components/schemas/PolicyAcceptance"
+      responses:
+        "201":
+          description: Account and session created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthEnvelope"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "428":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+  /v1/auth/login:
+    post:
+      tags: [Authentication]
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  writeOnly: true
+      responses:
+        "200":
+          description: Session created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthEnvelope"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+  /v1/auth/refresh:
+    post:
+      tags: [Authentication]
+      operationId: refreshSession
+      requestBody:
+        $ref: "#/components/requestBodies/RefreshToken"
+      responses:
+        "200":
+          description: Refresh token rotated and session renewed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthEnvelope"
+        "401":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+  /v1/auth/logout:
+    post:
+      tags: [Authentication]
+      operationId: logout
+      requestBody:
+        $ref: "#/components/requestBodies/RefreshToken"
+      responses:
+        "204":
+          description: Refresh token revoked.
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/me:
+    get:
+      tags: [Authentication]
+      operationId: getMe
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current account and missing policy acceptances.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [user, missing_policy_acceptances]
+                    properties:
+                      user:
+                        $ref: "#/components/schemas/PrivateUser"
+                      missing_policy_acceptances:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/PolicyAcceptance"
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/me/policy-acceptances:
+    post:
+      tags: [Policies]
+      operationId: acceptPolicies
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [policy_acceptances]
+              properties:
+                policy_acceptances:
+                  type: array
+                  minItems: 1
+                  items:
+                    $ref: "#/components/schemas/PolicyAcceptance"
+      responses:
+        "204":
+          description: Policies accepted.
+        "401":
+          $ref: "#/components/responses/Error"
+        "428":
+          $ref: "#/components/responses/Error"
+  /v1/challenges:
+    get:
+      tags: [Challenges]
+      operationId: listChallenges
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - name: include_private
+          in: query
+          schema:
+            type: boolean
+          description: Moderator-only switch for draft and unlisted challenges.
+      responses:
+        "200":
+          description: Challenges.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChallengeListEnvelope"
+  /v1/challenges/daily:
+    get:
+      tags: [Challenges]
+      operationId: getDailyChallenge
+      responses:
+        "200":
+          description: Active daily challenge.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChallengeEnvelope"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/challenges/{challengeID}:
+    parameters:
+      - $ref: "#/components/parameters/ChallengeID"
+    get:
+      tags: [Challenges]
+      operationId: getChallenge
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Challenge.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChallengeEnvelope"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/challenges/{challengeID}/submissions:
+    parameters:
+      - $ref: "#/components/parameters/ChallengeID"
+    get:
+      tags: [Submissions]
+      operationId: listChallengeSubmissions
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - name: include_private
+          in: query
+          schema:
+            type: boolean
+          description: Moderator-only switch for non-public submissions.
+      responses:
+        "200":
+          description: Ranked, blocking-aware submissions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmissionListEnvelope"
+    post:
+      tags: [Submissions]
+      operationId: createSubmission
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [media_upload_id]
+              properties:
+                media_upload_id:
+                  type: string
+                  format: uuid
+                caption:
+                  type: string
+                  maxLength: 280
+      responses:
+        "201":
+          description: Submission created in pending moderation state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmissionEnvelope"
+        "401":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "428":
+          $ref: "#/components/responses/Error"
+  /v1/uploads:
+    post:
+      tags: [Media]
+      operationId: createUpload
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content_type, size_bytes]
+              properties:
+                content_type:
+                  type: string
+                  enum: [video/mp4, video/quicktime, video/webm]
+                size_bytes:
+                  type: integer
+                  format: int64
+                  minimum: 1
+      responses:
+        "201":
+          description: Signed object-storage upload initialized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadInstructionEnvelope"
+        "401":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "428":
+          $ref: "#/components/responses/Error"
+  /v1/uploads/{uploadID}/complete:
+    parameters:
+      - $ref: "#/components/parameters/UploadID"
+    post:
+      tags: [Media]
+      operationId: completeUpload
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Uploaded object verified.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadEnvelope"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+  /v1/submissions/{submissionID}:
+    parameters:
+      - $ref: "#/components/parameters/SubmissionID"
+    get:
+      tags: [Submissions]
+      operationId: getSubmission
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Public submission, or private submission for its owner or a moderator.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmissionEnvelope"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/submissions/{submissionID}/vote:
+    parameters:
+      - $ref: "#/components/parameters/SubmissionID"
+    put:
+      tags: [Submissions]
+      operationId: upsertVote
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [score]
+              properties:
+                score:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+      responses:
+        "200":
+          description: Vote stored and aggregate score updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmissionEnvelope"
+        "403":
+          $ref: "#/components/responses/Error"
+        "428":
+          $ref: "#/components/responses/Error"
+  /v1/users/{userID}:
+    parameters:
+      - $ref: "#/components/parameters/UserID"
+    get:
+      tags: [Submissions]
+      operationId: getPublicUser
+      responses:
+        "200":
+          description: Public profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicUserEnvelope"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/users/{userID}/block:
+    parameters:
+      - $ref: "#/components/parameters/UserID"
+    put:
+      tags: [Safety]
+      operationId: blockUser
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: User blocked.
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      tags: [Safety]
+      operationId: unblockUser
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: User unblocked.
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/reports:
+    post:
+      tags: [Safety]
+      operationId: createReport
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReport"
+      responses:
+        "201":
+          description: Report queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportEnvelope"
+        "409":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "428":
+          $ref: "#/components/responses/Error"
+  /v1/copyright/notices:
+    post:
+      tags: [Copyright]
+      operationId: createCopyrightNotice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCopyrightNotice"
+      responses:
+        "201":
+          description: Notice received. Sensitive claimant data is not echoed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CopyrightReceiptEnvelope"
+        "422":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+  /v1/copyright/notices/{noticeID}/counter:
+    parameters:
+      - $ref: "#/components/parameters/NoticeID"
+    post:
+      tags: [Copyright]
+      operationId: createCopyrightCounterNotice
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCounterNotice"
+      responses:
+        "201":
+          description: Counter-notice received from the affected uploader.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CopyrightReceiptEnvelope"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /v1/moderation/actions/{actionID}/appeals:
+    parameters:
+      - $ref: "#/components/parameters/ActionID"
+    post:
+      tags: [Safety]
+      operationId: createAppeal
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  minLength: 20
+                  maxLength: 2000
+      responses:
+        "201":
+          description: Appeal received.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppealEnvelope"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /v1/admin/challenges:
+    post:
+      tags: [Administration]
+      operationId: adminCreateChallenge
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateChallenge"
+      responses:
+        "201":
+          description: Challenge created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChallengeEnvelope"
+        "403":
+          $ref: "#/components/responses/Error"
+  /v1/admin/submissions:
+    get:
+      tags: [Administration]
+      operationId: adminListSubmissions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/ModerationStatus"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Moderation queue.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmissionListEnvelope"
+        "403":
+          $ref: "#/components/responses/Error"
+  /v1/admin/submissions/{submissionID}/verification:
+    parameters:
+      - $ref: "#/components/parameters/SubmissionID"
+    put:
+      tags: [Administration]
+      operationId: adminUpdateVerification
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [pending, passed, failed, manual_review]
+                details:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "200":
+          description: Verification result recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmissionEnvelope"
+  /v1/admin/reports:
+    get:
+      tags: [Administration]
+      operationId: adminListReports
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, reviewing, resolved, dismissed]
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Report queue.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportListEnvelope"
+  /v1/admin/reports/{reportID}/dismiss:
+    parameters:
+      - $ref: "#/components/parameters/ReportID"
+    post:
+      tags: [Administration]
+      operationId: adminDismissReport
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [note]
+              properties:
+                note:
+                  type: string
+                  minLength: 10
+                  maxLength: 2000
+      responses:
+        "200":
+          description: Report dismissed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportEnvelope"
+  /v1/admin/moderation/actions:
+    post:
+      tags: [Administration]
+      operationId: adminCreateModerationAction
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateModerationAction"
+      responses:
+        "201":
+          description: Enforcement action applied and audited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModerationActionEnvelope"
+  /v1/admin/appeals:
+    get:
+      tags: [Administration]
+      operationId: adminListAppeals
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, upheld, reversed]
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Appeals.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppealListEnvelope"
+  /v1/admin/appeals/{appealID}:
+    parameters:
+      - $ref: "#/components/parameters/AppealID"
+    put:
+      tags: [Administration]
+      operationId: adminReviewAppeal
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, resolution_note]
+              properties:
+                status:
+                  type: string
+                  enum: [upheld, reversed]
+                resolution_note:
+                  type: string
+                  minLength: 10
+                  maxLength: 2000
+      responses:
+        "200":
+          description: Appeal reviewed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppealEnvelope"
+  /v1/admin/copyright/notices:
+    get:
+      tags: [Administration]
+      operationId: adminListCopyrightNotices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [received, reviewing, actioned, rejected, countered, restored, closed]
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Copyright notice queue including private claimant data.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CopyrightNoticeListEnvelope"
+  /v1/admin/copyright/notices/{noticeID}:
+    parameters:
+      - $ref: "#/components/parameters/NoticeID"
+    put:
+      tags: [Administration]
+      operationId: adminReviewCopyrightNotice
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, resolution_note]
+              properties:
+                status:
+                  type: string
+                  enum: [reviewing, actioned, rejected, restored, closed]
+                resolution_note:
+                  type: string
+                  minLength: 10
+                  maxLength: 2000
+                counter_notice_due:
+                  type: [string, "null"]
+                  format: date-time
+      responses:
+        "200":
+          description: Copyright notice state changed and linked content updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CopyrightNoticeEnvelope"
+  /v1/admin/audit-events:
+    get:
+      tags: [Administration]
+      operationId: adminListAuditEvents
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Reverse-chronological audit events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditListEnvelope"
+  /v1/admin/policies:
+    post:
+      tags: [Administration]
+      operationId: adminPublishPolicy
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublishPolicy"
+      responses:
+        "201":
+          description: Immutable policy version published as current.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyEnvelope"
+        "403":
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Offset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    PolicyKind:
+      name: kind
+      in: path
+      required: true
+      schema:
+        type: string
+    ChallengeID:
+      name: challengeID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    UploadID:
+      name: uploadID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SubmissionID:
+      name: submissionID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    UserID:
+      name: userID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    NoticeID:
+      name: noticeID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ActionID:
+      name: actionID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ReportID:
+      name: reportID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    AppealID:
+      name: appealID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  requestBodies:
+    RefreshToken:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [refresh_token]
+            properties:
+              refresh_token:
+                type: string
+                writeOnly: true
+  responses:
+    Error:
+      description: Structured API error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details: {}
+    Pagination:
+      type: object
+      required: [limit, offset]
+      properties:
+        limit:
+          type: integer
+        offset:
+          type: integer
+    PolicyAcceptance:
+      type: object
+      required: [kind, version]
+      properties:
+        kind:
+          type: string
+        version:
+          type: string
+    Policy:
+      type: object
+      required: [kind, version, title, content, requires_acceptance, effective_at]
+      properties:
+        kind:
+          type: string
+        version:
+          type: string
+        title:
+          type: string
+        content:
+          type: string
+          description: Markdown policy content.
+        requires_acceptance:
+          type: boolean
+        effective_at:
+          type: string
+          format: date-time
+    PolicyEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Policy"
+    PublicUser:
+      type: object
+      required: [id, handle, display_name, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        handle:
+          type: string
+        display_name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    PrivateUser:
+      allOf:
+        - $ref: "#/components/schemas/PublicUser"
+        - type: object
+          required: [email, date_of_birth, role, status]
+          properties:
+            email:
+              type: string
+              format: email
+            date_of_birth:
+              type: string
+              format: date
+            role:
+              type: string
+              enum: [user, moderator, admin]
+            status:
+              type: string
+              enum: [active, suspended, deleted]
+    PublicUserEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/PublicUser"
+    AuthTokens:
+      type: object
+      required:
+        - access_token
+        - access_token_expires_at
+        - refresh_token
+        - refresh_token_expires_at
+        - user
+      properties:
+        access_token:
+          type: string
+        access_token_expires_at:
+          type: string
+          format: date-time
+        refresh_token:
+          type: string
+        refresh_token_expires_at:
+          type: string
+          format: date-time
+        user:
+          $ref: "#/components/schemas/PrivateUser"
+    AuthEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/AuthTokens"
+    Challenge:
+      type: object
+      required:
+        - id
+        - slug
+        - title
+        - description
+        - rules
+        - status
+        - visibility
+        - starts_at
+        - ends_at
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        rules: {}
+        status:
+          type: string
+          enum: [draft, published, closed, archived]
+        visibility:
+          type: string
+          enum: [public, unlisted]
+        starts_at:
+          type: string
+          format: date-time
+        ends_at:
+          type: string
+          format: date-time
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ChallengeEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Challenge"
+    ChallengeListEnvelope:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Challenge"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    CreateChallenge:
+      type: object
+      required: [slug, title, description, rules, starts_at, ends_at]
+      properties:
+        slug:
+          type: string
+          pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        title:
+          type: string
+          minLength: 3
+          maxLength: 120
+        description:
+          type: string
+          minLength: 10
+          maxLength: 4000
+        rules: {}
+        status:
+          type: string
+          enum: [draft, published]
+          default: draft
+        visibility:
+          type: string
+          enum: [public, unlisted]
+          default: public
+        starts_at:
+          type: string
+          format: date-time
+        ends_at:
+          type: string
+          format: date-time
+    Upload:
+      type: object
+      required: [id, content_type, expected_size, status, expires_at, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        content_type:
+          type: string
+        expected_size:
+          type: integer
+          format: int64
+        actual_size:
+          type: [integer, "null"]
+          format: int64
+        status:
+          type: string
+          enum: [pending, uploaded, consumed, expired, rejected]
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    UploadEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Upload"
+    UploadInstructionEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [upload, method, url, headers]
+          properties:
+            upload:
+              $ref: "#/components/schemas/Upload"
+            method:
+              type: string
+              const: PUT
+            url:
+              type: string
+              format: uri
+            headers:
+              type: object
+              additionalProperties:
+                type: string
+    ModerationStatus:
+      type: string
+      enum: [pending, approved, rejected, removed]
+    Submission:
+      type: object
+      required:
+        - id
+        - challenge_id
+        - user_id
+        - caption
+        - verification_status
+        - moderation_status
+        - style_score
+        - vote_count
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        challenge_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        user_handle:
+          type: string
+        clip_url:
+          type: string
+          format: uri
+        caption:
+          type: string
+        verification_status:
+          type: string
+          enum: [pending, passed, failed, manual_review]
+        verification_details:
+          type: object
+          additionalProperties: true
+        moderation_status:
+          $ref: "#/components/schemas/ModerationStatus"
+        style_score:
+          type: number
+          format: double
+        vote_count:
+          type: integer
+        published_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    SubmissionEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Submission"
+    SubmissionListEnvelope:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Submission"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    CreateReport:
+      type: object
+      required: [target_type, target_id, reason]
+      properties:
+        target_type:
+          type: string
+          enum: [submission, user, challenge]
+        target_id:
+          type: string
+          format: uuid
+        reason:
+          type: string
+          enum:
+            - harassment
+            - hate
+            - sexual_content
+            - violence
+            - self_harm
+            - privacy
+            - spam
+            - cheating
+            - copyright
+            - underage
+            - child_safety
+            - other
+        details:
+          type: string
+          maxLength: 2000
+    Report:
+      type: object
+      required:
+        - id
+        - reporter_id
+        - target_type
+        - target_id
+        - reason
+        - status
+        - priority
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        reporter_id:
+          type: string
+          format: uuid
+        target_type:
+          type: string
+        target_id:
+          type: string
+          format: uuid
+        reason:
+          type: string
+        details:
+          type: string
+        status:
+          type: string
+          enum: [open, reviewing, resolved, dismissed]
+        priority:
+          type: string
+          enum: [low, normal, high, urgent]
+        assigned_to:
+          type: [string, "null"]
+          format: uuid
+        resolution_note:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        resolved_at:
+          type: [string, "null"]
+          format: date-time
+    ReportEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Report"
+    ReportListEnvelope:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Report"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    CreateModerationAction:
+      type: object
+      required: [target_type, target_id, action, reason]
+      properties:
+        target_type:
+          type: string
+          enum: [submission, user, challenge]
+        target_id:
+          type: string
+          format: uuid
+        action:
+          type: string
+          enum: [approve, reject, remove, restore, warn, suspend, unsuspend, close, archive]
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 200
+        notes:
+          type: string
+          maxLength: 2000
+        report_id:
+          type: [string, "null"]
+          format: uuid
+        metadata:
+          type: object
+          additionalProperties: true
+    ModerationAction:
+      type: object
+      required: [id, moderator_id, target_type, target_id, action, reason, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        moderator_id:
+          type: string
+          format: uuid
+        target_type:
+          type: string
+        target_id:
+          type: string
+          format: uuid
+        action:
+          type: string
+        reason:
+          type: string
+        notes:
+          type: string
+        report_id:
+          type: [string, "null"]
+          format: uuid
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+    ModerationActionEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/ModerationAction"
+    Appeal:
+      type: object
+      required: [id, user_id, action_id, reason, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        action_id:
+          type: string
+          format: uuid
+        reason:
+          type: string
+        status:
+          type: string
+          enum: [pending, upheld, reversed]
+        reviewed_by:
+          type: [string, "null"]
+          format: uuid
+        resolution_note:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        resolved_at:
+          type: [string, "null"]
+          format: date-time
+    AppealEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Appeal"
+    AppealListEnvelope:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Appeal"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    CreateCopyrightNotice:
+      type: object
+      required:
+        - claimant_name
+        - claimant_email
+        - claimant_address
+        - relationship
+        - copyrighted_work
+        - infringing_url
+        - good_faith
+        - accuracy
+        - signature
+      properties:
+        claimant_name:
+          type: string
+        claimant_email:
+          type: string
+          format: email
+        claimant_address:
+          type: string
+        relationship:
+          type: string
+        copyrighted_work:
+          type: string
+        infringing_url:
+          type: string
+          format: uri
+        submission_id:
+          type: [string, "null"]
+          format: uuid
+        good_faith:
+          type: boolean
+          const: true
+        accuracy:
+          type: boolean
+          const: true
+        signature:
+          type: string
+    CreateCounterNotice:
+      type: object
+      required:
+        - full_name
+        - address
+        - phone
+        - email
+        - good_faith
+        - consent_to_process
+        - signature
+      properties:
+        full_name:
+          type: string
+        address:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+          format: email
+        good_faith:
+          type: boolean
+          const: true
+        consent_to_process:
+          type: boolean
+          const: true
+        signature:
+          type: string
+    CopyrightReceiptEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [id, status, created_at]
+          properties:
+            id:
+              type: string
+              format: uuid
+            notice_id:
+              type: string
+              format: uuid
+            status:
+              type: string
+            created_at:
+              type: string
+              format: date-time
+    CopyrightNotice:
+      type: object
+      required:
+        - id
+        - claimant_name
+        - claimant_email
+        - claimant_address
+        - relationship
+        - copyrighted_work
+        - infringing_url
+        - good_faith
+        - accuracy
+        - signature
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        claimant_name:
+          type: string
+        claimant_email:
+          type: string
+          format: email
+        claimant_address:
+          type: string
+        relationship:
+          type: string
+        copyrighted_work:
+          type: string
+        infringing_url:
+          type: string
+          format: uri
+        submission_id:
+          type: [string, "null"]
+          format: uuid
+        good_faith:
+          type: boolean
+        accuracy:
+          type: boolean
+        signature:
+          type: string
+        status:
+          type: string
+          enum: [received, reviewing, actioned, rejected, countered, restored, closed]
+        resolution_note:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        actioned_at:
+          type: [string, "null"]
+          format: date-time
+        counter_notice_due:
+          type: [string, "null"]
+          format: date-time
+    CopyrightNoticeEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/CopyrightNotice"
+    CopyrightNoticeListEnvelope:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/CopyrightNotice"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    AuditEvent:
+      type: object
+      required: [id, action, entity_type, entity_id, metadata, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        actor_id:
+          type: [string, "null"]
+          format: uuid
+        action:
+          type: string
+        entity_type:
+          type: string
+        entity_id:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+    AuditListEnvelope:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEvent"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    PublishPolicy:
+      type: object
+      required:
+        - kind
+        - version
+        - title
+        - content
+        - requires_acceptance
+        - effective_at
+      properties:
+        kind:
+          type: string
+        version:
+          type: string
+        title:
+          type: string
+        content:
+          type: string
+          minLength: 100
+          maxLength: 100000
+        requires_acceptance:
+          type: boolean
+        effective_at:
+          type: string
+          format: date-time

@@ -1,0 +1,5 @@
+.env
+.cache/
+bin/
+coverage.out
+*.log
