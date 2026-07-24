@@ -34,17 +34,22 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	environment := strings.ToLower(get("APP_ENV", "development"))
+	allowedOrigins := strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS"))
+	if allowedOrigins == "" && environment != "production" {
+		allowedOrigins = "http://localhost:3000"
+	}
 	cfg := Config{
-		Environment:       get("APP_ENV", "development"),
+		Environment:       environment,
 		Port:              get("PORT", "8080"),
 		DatabaseURL:       strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		JWTSecret:         os.Getenv("JWT_SECRET"),
-		AllowedOrigins:    splitCSV(get("CORS_ALLOWED_ORIGINS", "http://localhost:3000")),
+		AllowedOrigins:    splitCSV(allowedOrigins),
 		BootstrapAdmins:   stringSet(splitCSV(os.Getenv("BOOTSTRAP_ADMIN_EMAILS"))),
 		S3Endpoint:        get("S3_ENDPOINT", "localhost:9000"),
 		S3PublicEndpoint:  get("S3_PUBLIC_ENDPOINT", "localhost:9000"),
-		S3AccessKey:       get("S3_ACCESS_KEY", "heatcheck"),
-		S3SecretKey:       get("S3_SECRET_KEY", "heatcheck-local-secret"),
+		S3AccessKey:       strings.TrimSpace(os.Getenv("S3_ACCESS_KEY")),
+		S3SecretKey:       os.Getenv("S3_SECRET_KEY"),
 		S3Bucket:          get("S3_BUCKET", "heatcheck-clips"),
 		S3Region:          get("S3_REGION", "us-east-1"),
 		ShutdownTimeout:   10 * time.Second,
@@ -87,6 +92,9 @@ func Load() (Config, error) {
 	}
 	if cfg.S3Endpoint == "" || cfg.S3PublicEndpoint == "" || cfg.S3Bucket == "" {
 		return Config{}, errors.New("S3_ENDPOINT, S3_PUBLIC_ENDPOINT, and S3_BUCKET are required")
+	}
+	if cfg.S3AccessKey == "" || cfg.S3SecretKey == "" {
+		return Config{}, errors.New("S3_ACCESS_KEY and S3_SECRET_KEY are required")
 	}
 	if cfg.Environment == "production" && len(cfg.BootstrapAdmins) > 0 {
 		return Config{}, errors.New("BOOTSTRAP_ADMIN_EMAILS must not be used in production")

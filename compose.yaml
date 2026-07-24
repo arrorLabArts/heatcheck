@@ -1,27 +1,33 @@
 services:
   postgres:
     image: postgres:17-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: heatcheck
-      POSTGRES_USER: heatcheck
-      POSTGRES_PASSWORD: heatcheck
+      POSTGRES_DB: ${POSTGRES_DB:-heatcheck}
+      POSTGRES_USER: ${POSTGRES_USER:-heatcheck}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U heatcheck -d heatcheck"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\"",
+        ]
       interval: 3s
       timeout: 3s
       retries: 20
 
   minio:
     image: minio/minio:latest
+    restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: heatcheck
-      MINIO_ROOT_PASSWORD: heatcheck-local-secret
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio-data:/data
 
@@ -29,32 +35,64 @@ services:
     image: minio/mc:latest
     depends_on:
       - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY is required}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY is required}
+      S3_BUCKET: ${S3_BUCKET:-heatcheck-clips}
     entrypoint:
       - /bin/sh
       - -c
       - |
-        until mc alias set local http://minio:9000 heatcheck heatcheck-local-secret; do sleep 1; done
-        mc mb --ignore-existing local/heatcheck-clips
+        set -eu
+        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do sleep 1; done
+        mc mb --ignore-existing "local/$${S3_BUCKET}"
+        cat > /tmp/heatcheck-api-policy.json <<EOF
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": ["s3:GetBucketLocation", "s3:ListBucket"],
+              "Resource": ["arn:aws:s3:::$${S3_BUCKET}"]
+            },
+            {
+              "Effect": "Allow",
+              "Action": ["s3:GetObject", "s3:PutObject"],
+              "Resource": ["arn:aws:s3:::$${S3_BUCKET}/*"]
+            }
+          ]
+        }
+        EOF
+        mc admin policy create local heatcheck-api /tmp/heatcheck-api-policy.json
+        mc admin user add local "$${S3_ACCESS_KEY}" "$${S3_SECRET_KEY}"
+        mc admin policy attach local heatcheck-api --user "$${S3_ACCESS_KEY}"
 
   api:
     build:
       context: .
+    restart: unless-stopped
     environment:
-      APP_ENV: development
+      APP_ENV: ${APP_ENV:-production}
       PORT: "8080"
-      DATABASE_URL: postgres://heatcheck:heatcheck@postgres:5432/heatcheck?sslmode=disable
-      JWT_SECRET: ${JWT_SECRET}
-      CORS_ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173
-      BOOTSTRAP_ADMIN_EMAILS: contact@ciphervybe.com
-      MINIMUM_AGE: "18"
-      S3_ENDPOINT: minio:9000
-      S3_PUBLIC_ENDPOINT: localhost:9000
-      S3_ACCESS_KEY: heatcheck
-      S3_SECRET_KEY: heatcheck-local-secret
-      S3_BUCKET: heatcheck-clips
-      S3_REGION: us-east-1
-      S3_INTERNAL_USE_SSL: "false"
-      S3_PUBLIC_USE_SSL: "false"
+      DATABASE_URL: postgres://${POSTGRES_USER:-heatcheck}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-heatcheck}?sslmode=${POSTGRES_SSLMODE:-disable}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-15m}
+      REFRESH_TOKEN_TTL: ${REFRESH_TOKEN_TTL:-720h}
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+      BOOTSTRAP_ADMIN_EMAILS: "${BOOTSTRAP_ADMIN_EMAILS:-}"
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-104857600}
+      MINIMUM_AGE: ${MINIMUM_AGE:-18}
+      UPLOAD_URL_TTL: ${UPLOAD_URL_TTL:-15m}
+      S3_ENDPOINT: ${S3_ENDPOINT:-minio:9000}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:?S3_PUBLIC_ENDPOINT is required}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY is required}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY is required}
+      S3_BUCKET: ${S3_BUCKET:-heatcheck-clips}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_INTERNAL_USE_SSL: "${S3_INTERNAL_USE_SSL:-false}"
+      S3_PUBLIC_USE_SSL: "${S3_PUBLIC_USE_SSL:-false}"
     ports:
       - "127.0.0.1:${API_HOST_PORT:-8080}:8080"
     depends_on:
