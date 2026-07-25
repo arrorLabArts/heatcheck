@@ -1,15 +1,20 @@
 package httpapi
 
 import (
+	"errors"
+	"html"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/arrorLabArts/heatcheck/internal/auth"
 	"github.com/arrorLabArts/heatcheck/internal/domain"
+	"github.com/arrorLabArts/heatcheck/internal/mailer"
 	"github.com/arrorLabArts/heatcheck/internal/store"
+	"github.com/go-chi/chi/v5"
 )
 
 var handlePattern = regexp.MustCompile(`^[a-z0-9_]{3,24}$`)
@@ -68,6 +73,9 @@ func (a *API) register(w http.ResponseWriter, r *http.Request) {
 		validationError(w, validation)
 		return
 	}
+	if !a.allowRateLimitIdentifier(w, r, "register-email", request.Email, 3, 24*time.Hour) {
+		return
+	}
 
 	passwordHash, err := auth.HashPassword(request.Password)
 	if err != nil {
@@ -79,15 +87,25 @@ func (a *API) register(w http.ResponseWriter, r *http.Request) {
 		role = domain.RoleAdmin
 	}
 
+	verificationToken, verificationHash, err := auth.NewOpaqueToken()
+	if err != nil {
+		a.logger.Error("generate email verification token", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "The account could not be created.", nil)
+		return
+	}
+	verificationURL := a.authLink("verify-email", verificationToken)
 	user, err := a.store.CreateUser(r.Context(), store.CreateUserParams{
-		Email:        request.Email,
-		PasswordHash: passwordHash,
-		Handle:       request.Handle,
-		DisplayName:  request.DisplayName,
-		DateOfBirth:  dateOfBirth,
-		Role:         role,
-		Acceptances:  request.Acceptances,
-		IPAddress:    clientIP(r),
+		Email:                 request.Email,
+		PasswordHash:          passwordHash,
+		Handle:                request.Handle,
+		DisplayName:           request.DisplayName,
+		DateOfBirth:           dateOfBirth,
+		Role:                  role,
+		Acceptances:           request.Acceptances,
+		IPAddress:             a.clientIP(r),
+		VerificationTokenHash: verificationHash,
+		VerificationExpiresAt: time.Now().UTC().Add(a.emailTokenTTL),
+		VerificationEmail:     verificationEmail(request.Email, request.DisplayName, verificationURL),
 	})
 	if err != nil {
 		handleStoreError(w, err)
@@ -115,6 +133,9 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.Email = strings.ToLower(strings.TrimSpace(request.Email))
+	if !a.allowRateLimitIdentifier(w, r, "login-email", request.Email, 30, 15*time.Minute) {
+		return
+	}
 	userWithPassword, err := a.store.GetUserByEmail(r.Context(), request.Email)
 	passwordHash := userWithPassword.PasswordHash
 	if err != nil {
@@ -124,6 +145,20 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 	if err != nil || !passwordMatches {
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "The email or password is incorrect.", nil)
 		return
+	}
+	if auth.PasswordNeedsRehash(userWithPassword.PasswordHash) {
+		replacementHash, hashErr := auth.HashPassword(request.Password)
+		if hashErr == nil {
+			hashErr = a.store.ReplacePasswordHash(
+				r.Context(),
+				userWithPassword.ID,
+				userWithPassword.PasswordHash,
+				replacementHash,
+			)
+		}
+		if hashErr != nil {
+			a.logger.Warn("upgrade password hash", "error", hashErr, "user_id", userWithPassword.ID)
+		}
 	}
 
 	response, err := a.issueTokens(r, userWithPassword.User)
@@ -164,7 +199,7 @@ func (a *API) refresh(w http.ResponseWriter, r *http.Request) {
 		newHash,
 		refreshExpiresAt,
 		r.UserAgent(),
-		clientIP(r),
+		a.clientIP(r),
 	)
 	if err != nil {
 		handleStoreError(w, err)
@@ -213,6 +248,167 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type opaqueTokenRequest struct {
+	Token string `json:"token"`
+}
+
+func (a *API) verifyEmail(w http.ResponseWriter, r *http.Request) {
+	var request opaqueTokenRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		badJSON(w, err)
+		return
+	}
+	if strings.TrimSpace(request.Token) == "" {
+		validationError(w, map[string]string{"token": "is required"})
+		return
+	}
+	if err := a.store.VerifyEmail(r.Context(), auth.HashOpaqueToken(request.Token)); err != nil {
+		if errors.Is(err, store.ErrToken) {
+			writeError(w, http.StatusUnprocessableEntity, "invalid_verification_token", "The verification token is invalid or expired.", nil)
+			return
+		}
+		handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusNoContent, nil)
+}
+
+func (a *API) resendEmailVerification(w http.ResponseWriter, r *http.Request) {
+	user, _ := userFromContext(r.Context())
+	if user.EmailVerifiedAt != nil {
+		writeJSON(w, http.StatusNoContent, nil)
+		return
+	}
+	token, hash, err := auth.NewOpaqueToken()
+	if err != nil {
+		a.logger.Error("generate email verification token", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Verification email could not be queued.", nil)
+		return
+	}
+	if err := a.store.StartEmailVerification(
+		r.Context(),
+		user.ID,
+		hash,
+		time.Now().UTC().Add(a.emailTokenTTL),
+		verificationEmail(user.Email, user.DisplayName, a.authLink("verify-email", token)),
+	); err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"data": map[string]string{"status": "queued"}})
+}
+
+type forgotPasswordRequest struct {
+	Email string `json:"email"`
+}
+
+func (a *API) forgotPassword(w http.ResponseWriter, r *http.Request) {
+	var request forgotPasswordRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		badJSON(w, err)
+		return
+	}
+	request.Email = strings.ToLower(strings.TrimSpace(request.Email))
+	if validEmail(request.Email) &&
+		!a.allowRateLimitIdentifier(w, r, "password-reset-email", request.Email, 5, time.Hour) {
+		return
+	}
+	token, hash, err := auth.NewOpaqueToken()
+	if err != nil {
+		a.logger.Error("generate password reset token", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "The password reset could not be requested.", nil)
+		return
+	}
+	if validEmail(request.Email) {
+		if err := a.store.StartPasswordReset(
+			r.Context(),
+			request.Email,
+			hash,
+			time.Now().UTC().Add(a.passwordResetTTL),
+			passwordResetEmail(request.Email, a.authLink("reset-password", token)),
+		); err != nil {
+			a.logger.Error("queue password reset", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "The password reset could not be requested.", nil)
+			return
+		}
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"data": map[string]string{
+			"status": "accepted",
+		},
+	})
+}
+
+type resetPasswordRequest struct {
+	Token       string `json:"token"`
+	NewPassword string `json:"new_password"`
+}
+
+func (a *API) resetPassword(w http.ResponseWriter, r *http.Request) {
+	var request resetPasswordRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		badJSON(w, err)
+		return
+	}
+	validation := map[string]string{}
+	if strings.TrimSpace(request.Token) == "" {
+		validation["token"] = "is required"
+	}
+	if len(request.NewPassword) < 10 || len(request.NewPassword) > 128 {
+		validation["new_password"] = "must contain 10-128 characters"
+	}
+	if len(validation) > 0 {
+		validationError(w, validation)
+		return
+	}
+	passwordHash, err := auth.HashPassword(request.NewPassword)
+	if err != nil {
+		validationError(w, map[string]string{"new_password": err.Error()})
+		return
+	}
+	if err := a.store.ResetPassword(
+		r.Context(),
+		auth.HashOpaqueToken(request.Token),
+		passwordHash,
+	); err != nil {
+		if errors.Is(err, store.ErrToken) {
+			writeError(w, http.StatusUnprocessableEntity, "invalid_password_reset_token", "The password reset token is invalid or expired.", nil)
+			return
+		}
+		handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusNoContent, nil)
+}
+
+func (a *API) listSessions(w http.ResponseWriter, r *http.Request) {
+	user, _ := userFromContext(r.Context())
+	sessions, err := a.store.ListSessions(r.Context(), user.ID)
+	if err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": sessions})
+}
+
+func (a *API) revokeSession(w http.ResponseWriter, r *http.Request) {
+	user, _ := userFromContext(r.Context())
+	if err := a.store.RevokeSession(r.Context(), user.ID, chi.URLParam(r, "sessionID")); err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusNoContent, nil)
+}
+
+func (a *API) revokeAllSessions(w http.ResponseWriter, r *http.Request) {
+	user, _ := userFromContext(r.Context())
+	if err := a.store.RevokeAllSessions(r.Context(), user.ID); err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusNoContent, nil)
+}
+
 type acceptPoliciesRequest struct {
 	Acceptances []domain.PolicyAcceptance `json:"policy_acceptances"`
 }
@@ -232,7 +428,7 @@ func (a *API) acceptPolicies(w http.ResponseWriter, r *http.Request) {
 		r.Context(),
 		user.ID,
 		request.Acceptances,
-		clientIP(r),
+		a.clientIP(r),
 	); err != nil {
 		handleStoreError(w, err)
 		return
@@ -257,7 +453,7 @@ func (a *API) issueTokens(r *http.Request, user domain.User) (tokenResponse, err
 		refreshHash,
 		refreshExpiresAt,
 		r.UserAgent(),
-		clientIP(r),
+		a.clientIP(r),
 	); err != nil {
 		return tokenResponse{}, err
 	}
@@ -287,4 +483,29 @@ func isAtLeastAge(dateOfBirth, now time.Time, minimumAge int) bool {
 		time.UTC,
 	)
 	return !dateOfBirth.After(cutoff)
+}
+
+func (a *API) authLink(action, token string) string {
+	return a.publicAppURL + "/auth/" + action + "?token=" + url.QueryEscape(token)
+}
+
+func verificationEmail(address, displayName, link string) mailer.Message {
+	safeName := html.EscapeString(displayName)
+	safeLink := html.EscapeString(link)
+	return mailer.Message{
+		To:       address,
+		Subject:  "Verify your HeatCheck email",
+		TextBody: "Hi " + displayName + ",\n\nVerify your HeatCheck email address:\n" + link + "\n\nIf you did not create this account, ignore this message.",
+		HTMLBody: "<p>Hi " + safeName + ",</p><p>Verify your HeatCheck email address:</p><p><a href=\"" + safeLink + "\">Verify email</a></p><p>If you did not create this account, ignore this message.</p>",
+	}
+}
+
+func passwordResetEmail(address, link string) mailer.Message {
+	safeLink := html.EscapeString(link)
+	return mailer.Message{
+		To:       address,
+		Subject:  "Reset your HeatCheck password",
+		TextBody: "A password reset was requested for your HeatCheck account.\n\nReset your password:\n" + link + "\n\nIf you did not request this, ignore this message.",
+		HTMLBody: "<p>A password reset was requested for your HeatCheck account.</p><p><a href=\"" + safeLink + "\">Reset password</a></p><p>If you did not request this, ignore this message.</p>",
+	}
 }

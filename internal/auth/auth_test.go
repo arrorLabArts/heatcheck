@@ -3,6 +3,8 @@ package auth
 import (
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestPasswordRoundTrip(t *testing.T) {
@@ -15,6 +17,22 @@ func TestPasswordRoundTrip(t *testing.T) {
 	}
 	if CheckPassword(hash, "not-the-password") {
 		t.Fatal("expected incorrect password not to match")
+	}
+	if PasswordNeedsRehash(hash) {
+		t.Fatal("new Argon2id hash should not require rehashing")
+	}
+}
+
+func TestLegacyBcryptPasswordCompatibility(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("a-secure-password"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !CheckPassword(string(hash), "a-secure-password") {
+		t.Fatal("expected legacy bcrypt password to match")
+	}
+	if !PasswordNeedsRehash(string(hash)) {
+		t.Fatal("legacy bcrypt hash should require rehashing")
 	}
 }
 

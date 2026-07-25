@@ -14,6 +14,7 @@ type CreateReportParams struct {
 	Reason     string
 	Details    string
 	Priority   string
+	AlertEmail any
 }
 
 func scanReport(row scanner) (domain.Report, error) {
@@ -44,7 +45,12 @@ func (s *Store) CreateReport(ctx context.Context, params CreateReportParams) (do
 	if !exists {
 		return domain.Report{}, ErrNotFound
 	}
-	return scanReport(s.pool.QueryRow(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Report{}, mapError(err)
+	}
+	defer tx.Rollback(ctx)
+	report, err := scanReport(tx.QueryRow(ctx, `
 		INSERT INTO reports (
 			reporter_id, target_type, target_id, reason, details, priority
 		)
@@ -61,6 +67,25 @@ func (s *Store) CreateReport(ctx context.Context, params CreateReportParams) (do
 		params.Details,
 		params.Priority,
 	))
+	if err != nil {
+		return domain.Report{}, err
+	}
+	if params.AlertEmail != nil {
+		payload, err := s.encodeEmailPayload(params.AlertEmail)
+		if err != nil {
+			return domain.Report{}, err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO jobs (kind, entity_id, payload, max_attempts)
+			VALUES ('email.safety_alert', $1, $2, 12)
+		`, report.ID, payload); err != nil {
+			return domain.Report{}, mapError(err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Report{}, mapError(err)
+	}
+	return report, nil
 }
 
 func (s *Store) targetExists(ctx context.Context, targetType, targetID string) (bool, error) {
@@ -191,7 +216,10 @@ func (s *Store) CreateModerationAction(
 		command = `
 			UPDATE submissions
 			SET moderation_status = 'approved',
-			    published_at = COALESCE(published_at, now()),
+			    published_at = CASE
+			        WHEN verification_status = 'passed' THEN COALESCE(published_at, now())
+			        ELSE NULL
+			    END,
 			    updated_at = now()
 			WHERE id = $1
 		`
@@ -456,15 +484,28 @@ func (s *Store) ReviewAppeal(
 	if status == "reversed" {
 		var reversalAction string
 		var command string
+		commandArgs := []any{targetID, actionID}
 		switch targetType + ":" + originalAction {
 		case "submission:reject", "submission:remove":
 			reversalAction = "restore"
 			command = `
 				UPDATE submissions
 				SET moderation_status = 'approved',
-				    published_at = COALESCE(published_at, now()),
+				    published_at = CASE
+				        WHEN verification_status = 'passed' THEN COALESCE(published_at, now())
+				        ELSE NULL
+				    END,
 				    updated_at = now()
 				WHERE id = $1
+				  AND (
+				      SELECT latest.id
+				      FROM moderation_actions latest
+				      WHERE latest.target_type = 'submission'
+				        AND latest.target_id = $1::uuid
+				        AND latest.action IN ('approve', 'reject', 'remove', 'restore')
+				      ORDER BY latest.created_at DESC, latest.id DESC
+				      LIMIT 1
+				  ) = $2::uuid
 			`
 		case "user:suspend":
 			reversalAction = "unsuspend"
@@ -472,6 +513,15 @@ func (s *Store) ReviewAppeal(
 				UPDATE users
 				SET status = 'active', updated_at = now()
 				WHERE id = $1 AND status = 'suspended'
+				  AND (
+				      SELECT latest.id
+				      FROM moderation_actions latest
+				      WHERE latest.target_type = 'user'
+				        AND latest.target_id = $1::uuid
+				        AND latest.action IN ('suspend', 'unsuspend')
+				      ORDER BY latest.created_at DESC, latest.id DESC
+				      LIMIT 1
+				  ) = $2::uuid
 			`
 		case "user:warn":
 			reversalAction = ""
@@ -479,7 +529,7 @@ func (s *Store) ReviewAppeal(
 			return domain.Appeal{}, ErrInvalid
 		}
 		if command != "" {
-			tag, err := tx.Exec(ctx, command, targetID)
+			tag, err := tx.Exec(ctx, command, commandArgs...)
 			if err != nil {
 				return domain.Appeal{}, mapError(err)
 			}

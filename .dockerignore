@@ -1,0 +1,10 @@
+.git
+.agents
+.codex
+.env
+.env.*
+!.env.example
+bin
+coverage.out
+*.log
+HeatCheck App concept.pdf

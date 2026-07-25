@@ -2,10 +2,14 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
+	"html"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/arrorLabArts/heatcheck/internal/mailer"
 	"github.com/arrorLabArts/heatcheck/internal/store"
 	"github.com/go-chi/chi/v5"
 )
@@ -302,18 +306,78 @@ func (a *API) reviewCopyrightNotice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, _ := userFromContext(r.Context())
+	noticeID := chi.URLParam(r, "noticeID")
+	recipients, err := a.store.GetCopyrightRecipients(r.Context(), noticeID)
+	if err != nil {
+		handleStoreError(w, err)
+		return
+	}
 	notice, err := a.store.ReviewCopyrightNotice(r.Context(), store.ReviewCopyrightNoticeParams{
-		NoticeID:         chi.URLParam(r, "noticeID"),
+		NoticeID:         noticeID,
 		ActorID:          user.ID,
 		Status:           request.Status,
 		ResolutionNote:   request.ResolutionNote,
 		CounterNoticeDue: request.CounterNoticeDue,
+		Notifications: a.copyrightReviewNotifications(
+			noticeID,
+			request.Status,
+			recipients,
+		),
 	})
 	if err != nil {
 		handleStoreError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": notice})
+}
+
+func (a *API) copyrightReviewNotifications(
+	noticeID string,
+	status string,
+	recipients store.CopyrightRecipients,
+) []store.EmailNotification {
+	var notifications []store.EmailNotification
+	if recipients.ClaimantEmail != "" {
+		body := fmt.Sprintf(
+			"HeatCheck copyright notice %s is now %s. Reply to the legal contact address if further information is required.",
+			noticeID,
+			status,
+		)
+		notifications = append(notifications, store.EmailNotification{
+			Kind: "email.copyright_status",
+			Payload: mailer.Message{
+				To:       recipients.ClaimantEmail,
+				Subject:  "HeatCheck copyright notice update",
+				TextBody: body,
+				HTMLBody: "<p>" + html.EscapeString(body) + "</p>",
+			},
+		})
+	}
+	if recipients.UploaderEmail == "" {
+		return notifications
+	}
+	var body string
+	switch status {
+	case "actioned":
+		link := a.publicAppURL + "/copyright/notices/" + url.PathEscape(noticeID)
+		body = "A copyright notice affecting your HeatCheck submission was actioned and the submission is restricted. Review the notice and counter-notice option in the app: " + link
+	case "restored":
+		body = "The copyright restriction associated with HeatCheck notice " + noticeID + " was resolved. The submission may be restored unless another moderation or legal restriction remains."
+	case "closed":
+		body = "HeatCheck copyright notice " + noticeID + " was closed. Check the app for the current state of the affected submission."
+	}
+	if body != "" {
+		notifications = append(notifications, store.EmailNotification{
+			Kind: "email.copyright_uploader_status",
+			Payload: mailer.Message{
+				To:       recipients.UploaderEmail,
+				Subject:  "HeatCheck copyright notice update",
+				TextBody: body,
+				HTMLBody: "<p>" + html.EscapeString(body) + "</p>",
+			},
+		})
+	}
+	return notifications
 }
 
 func (a *API) listAuditEvents(w http.ResponseWriter, r *http.Request) {

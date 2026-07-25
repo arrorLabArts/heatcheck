@@ -2,15 +2,20 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/arrorLabArts/heatcheck/internal/domain"
+	"github.com/arrorLabArts/heatcheck/internal/store"
 	"github.com/go-chi/chi/v5/middleware"
 )
 
@@ -88,6 +93,27 @@ func (a *API) requirePolicies(next http.Handler) http.Handler {
 	})
 }
 
+func (a *API) requireEmailVerified(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, ok := userFromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "authentication_required", "Authentication is required.", nil)
+			return
+		}
+		if user.EmailVerifiedAt == nil {
+			writeError(
+				w,
+				http.StatusForbidden,
+				"email_verification_required",
+				"Verify the account email address before continuing.",
+				nil,
+			)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func requireRoles(roles ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -110,7 +136,17 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requestIDHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-ID", middleware.GetReqID(r.Context()))
 		next.ServeHTTP(w, r)
 	})
 }
@@ -128,7 +164,7 @@ func cors(allowedOrigins []string) func(http.Handler) http.Handler {
 				w.Header().Set("Vary", "Origin")
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID")
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			}
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
@@ -177,12 +213,35 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-func clientIP(r *http.Request) string {
+func (a *API) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	remote := net.ParseIP(host)
+	if remote == nil || !a.isTrustedProxy(remote) {
 		return host
 	}
-	return r.RemoteAddr
+	chain := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for index := len(chain) - 1; index >= 0; index-- {
+		candidate := net.ParseIP(strings.TrimSpace(chain[index]))
+		if candidate == nil {
+			continue
+		}
+		if !a.isTrustedProxy(candidate) {
+			return candidate.String()
+		}
+	}
+	return remote.String()
+}
+
+func (a *API) isTrustedProxy(ip net.IP) bool {
+	for _, network := range a.trustedProxies {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *API) rateLimit(
@@ -192,13 +251,77 @@ func (a *API) rateLimit(
 ) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key := name + ":" + clientIP(r)
-			if !a.limiter.allow(key, maximum, window, time.Now()) {
-				w.Header().Set("Retry-After", "60")
+			now := time.Now().UTC()
+			key := name + ":" + a.clientIP(r)
+			resetAt, err := a.store.AllowRateLimit(r.Context(), key, maximum, window, now)
+			if errors.Is(err, store.ErrRateLimit) {
+				retryAfter := max(1, int(time.Until(resetAt).Seconds()))
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 				writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many requests. Try again later.", nil)
+				return
+			}
+			if err != nil {
+				a.logger.Error("apply rate limit", "error", err, "limit", name)
+				writeError(w, http.StatusServiceUnavailable, "service_unavailable", "The service is temporarily unavailable.", nil)
 				return
 			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func (a *API) rateLimitActor(
+	name string,
+	maximum int,
+	window time.Duration,
+) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, ok := userFromContext(r.Context())
+			if !ok {
+				writeError(w, http.StatusUnauthorized, "authentication_required", "Authentication is required.", nil)
+				return
+			}
+			now := time.Now().UTC()
+			key := name + ":user:" + user.ID
+			resetAt, err := a.store.AllowRateLimit(r.Context(), key, maximum, window, now)
+			if errors.Is(err, store.ErrRateLimit) {
+				retryAfter := max(1, int(time.Until(resetAt).Seconds()))
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many requests. Try again later.", nil)
+				return
+			}
+			if err != nil {
+				a.logger.Error("apply rate limit", "error", err, "limit", name, "user_id", user.ID)
+				writeError(w, http.StatusServiceUnavailable, "service_unavailable", "The service is temporarily unavailable.", nil)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func (a *API) allowRateLimitIdentifier(
+	w http.ResponseWriter,
+	r *http.Request,
+	name string,
+	identifier string,
+	maximum int,
+	window time.Duration,
+) bool {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(identifier))))
+	key := name + ":identifier:" + hex.EncodeToString(sum[:])
+	resetAt, err := a.store.AllowRateLimit(r.Context(), key, maximum, window, time.Now().UTC())
+	if errors.Is(err, store.ErrRateLimit) {
+		retryAfter := max(1, int(time.Until(resetAt).Seconds()))
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many requests. Try again later.", nil)
+		return false
+	}
+	if err != nil {
+		a.logger.Error("apply rate limit", "error", err, "limit", name)
+		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "The service is temporarily unavailable.", nil)
+		return false
+	}
+	return true
 }

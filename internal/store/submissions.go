@@ -13,7 +13,8 @@ const submissionColumns = `
 	s.id, s.challenge_id, s.user_id, u.handle, s.media_upload_id,
 	s.caption, s.verification_status, s.verification_details,
 	s.moderation_status, s.style_score, s.vote_count, s.published_at,
-	s.created_at, s.updated_at, m.object_key
+	s.created_at, s.updated_at, COALESCE(m.processed_object_key, m.object_key),
+	COALESCE(m.thumbnail_object_key, '')
 `
 
 func scanSubmission(row scanner) (domain.Submission, error) {
@@ -34,6 +35,7 @@ func scanSubmission(row scanner) (domain.Submission, error) {
 		&submission.CreatedAt,
 		&submission.UpdatedAt,
 		&submission.MediaObjectKey,
+		&submission.MediaThumbnailKey,
 	)
 	return submission, mapError(err)
 }
@@ -84,6 +86,39 @@ func (s *Store) CreateSubmission(
 		return domain.Submission{}, ErrInvalid
 	}
 
+	var reservationID string
+	var entitlementActive bool
+	err = tx.QueryRow(ctx, `
+		SELECT
+			reservation.id,
+			entitlement.active
+				AND (
+					entitlement.valid_until IS NULL
+					OR entitlement.valid_until > $3
+				)
+		FROM submission_usage_reservations reservation
+		JOIN entitlements entitlement
+		  ON entitlement.user_id = reservation.user_id
+		 AND entitlement.entitlement_id = reservation.entitlement_id
+		WHERE reservation.media_upload_id = $1
+		  AND reservation.user_id = $2
+		  AND reservation.status = 'reserved'
+		  AND reservation.expires_at > $3
+		FOR UPDATE OF reservation, entitlement
+	`, params.MediaUploadID, params.UserID, params.Now).Scan(
+		&reservationID,
+		&entitlementActive,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Submission{}, ErrInvalid
+	}
+	if err != nil {
+		return domain.Submission{}, mapError(err)
+	}
+	if !entitlementActive {
+		return domain.Submission{}, ErrSubscriptionRequired
+	}
+
 	var submissionID string
 	err = tx.QueryRow(ctx, `
 		INSERT INTO submissions (
@@ -106,6 +141,27 @@ func (s *Store) CreateSubmission(
 		SET status = 'consumed', updated_at = now()
 		WHERE id = $1
 	`, params.MediaUploadID); err != nil {
+		return domain.Submission{}, mapError(err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE submission_usage_reservations
+		SET status = 'consumed',
+		    submission_id = $2,
+		    consumed_at = $3,
+		    updated_at = now()
+		WHERE id = $1
+	`, reservationID, submissionID, params.Now); err != nil {
+		return domain.Submission{}, mapError(err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO jobs (kind, entity_id, dedupe_key, max_attempts)
+		VALUES (
+			'submission.analyze',
+			$1::uuid,
+			'submission.analyze:' || ($1::uuid)::text,
+			5
+		)
+	`, submissionID); err != nil {
 		return domain.Submission{}, mapError(err)
 	}
 
@@ -150,7 +206,12 @@ func (s *Store) ListChallengeSubmissions(
 		JOIN users u ON u.id = s.user_id
 		JOIN media_uploads m ON m.id = s.media_upload_id
 		WHERE s.challenge_id = $1
-		  AND ($3 OR s.moderation_status = 'approved')
+		  AND (
+			$3 OR (
+				s.moderation_status = 'approved'
+				AND s.verification_status = 'passed'
+			)
+		  )
 		  AND (
 			NULLIF($2, '')::uuid IS NULL
 			OR NOT EXISTS (
@@ -190,20 +251,22 @@ func (s *Store) Vote(
 	}
 	defer tx.Rollback(ctx)
 
-	var ownerID, moderationStatus string
+	var ownerID, moderationStatus, verificationStatus string
 	err = tx.QueryRow(ctx, `
-		SELECT user_id, moderation_status
+		SELECT user_id, moderation_status, verification_status
 		FROM submissions
 		WHERE id = $1
 		FOR UPDATE
-	`, submissionID).Scan(&ownerID, &moderationStatus)
+	`, submissionID).Scan(&ownerID, &moderationStatus, &verificationStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Submission{}, ErrNotFound
 	}
 	if err != nil {
 		return domain.Submission{}, mapError(err)
 	}
-	if moderationStatus != "approved" || ownerID == userID {
+	if moderationStatus != "approved" ||
+		verificationStatus != "passed" ||
+		ownerID == userID {
 		return domain.Submission{}, ErrForbidden
 	}
 	var blocked bool
@@ -308,17 +371,25 @@ func (s *Store) UpdateVerification(
 	defer tx.Rollback(ctx)
 
 	command, err := tx.Exec(ctx, `
-		UPDATE submissions
+		UPDATE submissions s
 		SET verification_status = $2,
 		    verification_details = $3,
+		    published_at = CASE
+		        WHEN $2 = 'passed' AND s.moderation_status = 'approved'
+		        THEN COALESCE(s.published_at, now())
+		        ELSE NULL
+		    END,
 		    updated_at = now()
-		WHERE id = $1
+		FROM media_uploads m
+		WHERE s.id = $1
+		  AND m.id = s.media_upload_id
+		  AND ($2 <> 'passed' OR m.scanned_at IS NOT NULL)
 	`, submissionID, status, details)
 	if err != nil {
 		return domain.Submission{}, mapError(err)
 	}
 	if command.RowsAffected() == 0 {
-		return domain.Submission{}, ErrNotFound
+		return domain.Submission{}, ErrInvalid
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO audit_events (

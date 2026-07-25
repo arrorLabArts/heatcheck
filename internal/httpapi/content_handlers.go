@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/arrorLabArts/heatcheck/internal/domain"
+	"github.com/arrorLabArts/heatcheck/internal/sharecard"
 	"github.com/arrorLabArts/heatcheck/internal/store"
 	"github.com/go-chi/chi/v5"
 )
@@ -172,12 +174,19 @@ func (a *API) createUpload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error", "The upload could not be initialized.", nil)
 		return
 	}
-	upload, err := a.store.CreateMediaUpload(r.Context(), store.CreateMediaUploadParams{
-		UserID:       user.ID,
-		ObjectKey:    objectKey,
-		ContentType:  request.ContentType,
-		ExpectedSize: request.SizeBytes,
-		ExpiresAt:    now.Add(a.uploadURLTTL),
+	upload, err := a.store.CreatePaidMediaUpload(r.Context(), store.CreatePaidMediaUploadParams{
+		CreateMediaUploadParams: store.CreateMediaUploadParams{
+			UserID:       user.ID,
+			ObjectKey:    objectKey,
+			ContentType:  request.ContentType,
+			ExpectedSize: request.SizeBytes,
+			ExpiresAt:    now.Add(a.uploadURLTTL),
+		},
+		EntitlementID:    a.billing.EntitlementID(),
+		DailyLimit:       a.proDailyLimit,
+		MonthlyLimit:     a.proMonthlyLimit,
+		GlobalDailyLimit: a.globalDailyLimit,
+		Now:              now,
 	})
 	if err != nil {
 		handleStoreError(w, err)
@@ -191,6 +200,17 @@ func (a *API) createUpload(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		a.logger.Error("presign upload", "error", err, "upload_id", upload.ID)
+		if releaseErr := a.store.ReleaseUploadReservation(
+			r.Context(),
+			upload.ID,
+			user.ID,
+		); releaseErr != nil {
+			a.logger.Error(
+				"release failed upload reservation",
+				"error", releaseErr,
+				"upload_id", upload.ID,
+			)
+		}
 		writeError(w, http.StatusBadGateway, "storage_error", "The upload could not be initialized.", nil)
 		return
 	}
@@ -236,7 +256,13 @@ func (a *API) completeUpload(w http.ResponseWriter, r *http.Request) {
 		validationError(w, map[string]string{"content_type": "uploaded object content type does not match"})
 		return
 	}
-	upload, err = a.store.CompleteMediaUpload(r.Context(), upload.ID, user.ID, info.Size)
+	upload, err = a.store.CompletePaidMediaUpload(
+		r.Context(),
+		upload.ID,
+		user.ID,
+		info.Size,
+		time.Now().UTC().Add(a.reservationTTL),
+	)
 	if err != nil {
 		handleStoreError(w, err)
 		return
@@ -297,7 +323,7 @@ func (a *API) getSubmission(w http.ResponseWriter, r *http.Request) {
 		(user.ID == submission.UserID ||
 			user.Role == domain.RoleModerator ||
 			user.Role == domain.RoleAdmin)
-	if submission.ModerationStatus != "approved" && !canViewPrivate {
+	if (submission.ModerationStatus != "approved" || submission.VerificationStatus != "passed") && !canViewPrivate {
 		writeError(w, http.StatusNotFound, "not_found", "The requested resource was not found.", nil)
 		return
 	}
@@ -383,10 +409,90 @@ func (a *API) getPublicUser(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": user})
+	stats, err := a.store.GetPublicUserStats(r.Context(), user.ID)
+	if err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": map[string]any{
+			"user":  user,
+			"stats": stats,
+		},
+	})
+}
+
+func (a *API) getLeaderboard(w http.ResponseWriter, r *http.Request) {
+	user, authenticated := userFromContext(r.Context())
+	viewerID := ""
+	if authenticated {
+		viewerID = user.ID
+	}
+	limit, offset := pagination(r)
+	submissions, err := a.store.ListChallengeSubmissions(
+		r.Context(),
+		chi.URLParam(r, "challengeID"),
+		viewerID,
+		false,
+		limit,
+		offset,
+	)
+	if err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	entries := make([]domain.LeaderboardEntry, 0, len(submissions))
+	for index := range submissions {
+		if err := a.attachClipURL(r, &submissions[index]); err != nil {
+			a.logger.Error("presign leaderboard clip", "error", err, "submission_id", submissions[index].ID)
+			writeError(w, http.StatusBadGateway, "storage_error", "Clips are temporarily unavailable.", nil)
+			return
+		}
+		entries = append(entries, domain.LeaderboardEntry{
+			Rank:       offset + index + 1,
+			Submission: submissions[index],
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": entries,
+		"pagination": map[string]int{
+			"limit": limit, "offset": offset,
+		},
+	})
+}
+
+func (a *API) getShareCard(w http.ResponseWriter, r *http.Request) {
+	data, err := a.store.GetShareData(r.Context(), chi.URLParam(r, "submissionID"))
+	if err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	var card bytes.Buffer
+	if err := sharecard.Render(&card, sharecard.Data{
+		ChallengeTitle: data.ChallengeTitle,
+		Handle:         data.Submission.UserHandle,
+		DisplayName:    data.DisplayName,
+		Score:          data.Submission.StyleScore,
+		VoteCount:      data.Submission.VoteCount,
+		Rank:           data.Rank,
+		CurrentStreak:  data.CurrentStreak,
+	}); err != nil {
+		a.logger.Error("render share card", "error", err, "submission_id", data.Submission.ID)
+		writeError(w, http.StatusInternalServerError, "internal_error", "The share card could not be rendered.", nil)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Set("Content-Length", strconv.Itoa(card.Len()))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(card.Bytes())
 }
 
 func (a *API) attachClipURL(r *http.Request, submission *domain.Submission) error {
+	submission.MediaUploadID = ""
+	if submission.MediaThumbnailKey == "" {
+		return nil
+	}
 	url, err := a.media.PresignedDownloadURL(
 		r.Context(),
 		submission.MediaObjectKey,
@@ -396,7 +502,17 @@ func (a *API) attachClipURL(r *http.Request, submission *domain.Submission) erro
 		return err
 	}
 	submission.ClipURL = url
-	submission.MediaUploadID = ""
+	if submission.MediaThumbnailKey != "" {
+		thumbnailURL, err := a.media.PresignedDownloadURL(
+			r.Context(),
+			submission.MediaThumbnailKey,
+			10*time.Minute,
+		)
+		if err != nil {
+			return err
+		}
+		submission.ThumbnailURL = thumbnailURL
+	}
 	return nil
 }
 

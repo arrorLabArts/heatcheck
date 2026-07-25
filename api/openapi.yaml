@@ -1,10 +1,11 @@
 openapi: 3.1.0
 info:
   title: HeatCheck Public API
-  version: 0.1.0
+  version: 1.0.0
   description: |
-    API for HeatCheck challenges, proof clips, voting, moderation, and
-    copyright workflows. All timestamps use RFC 3339 UTC values.
+    Production API for HeatCheck challenges, proof clips, OpenAI-assisted
+    verification, paid participation, voting, moderation, account lifecycle,
+    and copyright workflows. All timestamps use RFC 3339 UTC values.
 servers:
   - url: https://heatcheck.dogi.watch
     description: Production
@@ -12,19 +13,46 @@ servers:
     description: Local development
 tags:
   - name: System
+    description: Health, readiness, and API contract endpoints.
   - name: Policies
+    description: Versioned public policy documents and acceptance.
   - name: Authentication
+    description: Account registration, credentials, tokens, and sessions.
+  - name: Accounts
+    description: Account exports, deletion, and lifecycle operations.
+  - name: Billing
+    description: RevenueCat subscription synchronization and Pro entitlements.
   - name: Challenges
+    description: Scheduled gameplay challenge discovery.
   - name: Media
+    description: Signed proof-clip upload workflow.
   - name: Submissions
+    description: Challenge entries, voting, profiles, rankings, and share cards.
   - name: Safety
+    description: User safety controls, reports, and appeals.
   - name: Copyright
+    description: Copyright notices and uploader counter-notices.
   - name: Administration
+    description: Moderator and administrator operations.
+security: []
 paths:
+  /openapi.yaml:
+    get:
+      tags: [System]
+      operationId: getOpenAPISpec
+      summary: Get the OpenAPI contract
+      responses:
+        "200":
+          description: OpenAPI 3.1 contract.
+          content:
+            application/yaml:
+              schema:
+                type: string
   /healthz:
     get:
       tags: [System]
       operationId: health
+      summary: Check API process health
       responses:
         "200":
           description: Process is running.
@@ -36,6 +64,7 @@ paths:
     get:
       tags: [System]
       operationId: readiness
+      summary: Check API dependency readiness
       responses:
         "200":
           description: Service dependencies are ready.
@@ -49,6 +78,7 @@ paths:
     get:
       tags: [Policies]
       operationId: listCurrentPolicies
+      summary: List current policy documents
       responses:
         "200":
           description: Current policy documents.
@@ -68,6 +98,7 @@ paths:
     get:
       tags: [Policies]
       operationId: getCurrentPolicy
+      summary: Get a current policy document
       responses:
         "200":
           description: Current policy document.
@@ -81,6 +112,7 @@ paths:
     post:
       tags: [Authentication]
       operationId: register
+      summary: Register an account
       requestBody:
         required: true
         content:
@@ -137,6 +169,7 @@ paths:
     post:
       tags: [Authentication]
       operationId: login
+      summary: Log in and create a session
       requestBody:
         required: true
         content:
@@ -168,6 +201,7 @@ paths:
     post:
       tags: [Authentication]
       operationId: refreshSession
+      summary: Rotate a refresh token
       requestBody:
         $ref: "#/components/requestBodies/RefreshToken"
       responses:
@@ -185,6 +219,7 @@ paths:
     post:
       tags: [Authentication]
       operationId: logout
+      summary: Revoke a refresh token
       requestBody:
         $ref: "#/components/requestBodies/RefreshToken"
       responses:
@@ -192,10 +227,75 @@ paths:
           description: Refresh token revoked.
         "401":
           $ref: "#/components/responses/Error"
+  /v1/auth/verify-email:
+    post:
+      tags: [Authentication]
+      operationId: verifyEmail
+      summary: Verify an email address
+      requestBody:
+        $ref: "#/components/requestBodies/OpaqueToken"
+      responses:
+        "204":
+          description: Email address verified.
+        "422":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+  /v1/auth/forgot-password:
+    post:
+      tags: [Authentication]
+      operationId: forgotPassword
+      summary: Request a password reset
+      description: Always returns an accepted response to prevent account enumeration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        "202":
+          description: Password-reset request accepted.
+        "429":
+          $ref: "#/components/responses/Error"
+  /v1/auth/reset-password:
+    post:
+      tags: [Authentication]
+      operationId: resetPassword
+      summary: Reset an account password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, new_password]
+              properties:
+                token:
+                  type: string
+                  writeOnly: true
+                new_password:
+                  type: string
+                  minLength: 10
+                  maxLength: 128
+                  writeOnly: true
+      responses:
+        "204":
+          description: Password changed and all sessions revoked.
+        "422":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
   /v1/me:
     get:
       tags: [Authentication]
       operationId: getMe
+      summary: Get the authenticated account
       security:
         - bearerAuth: []
       responses:
@@ -219,10 +319,263 @@ paths:
                           $ref: "#/components/schemas/PolicyAcceptance"
         "401":
           $ref: "#/components/responses/Error"
+    delete:
+      tags: [Accounts]
+      operationId: requestAccountDeletion
+      summary: Schedule account deletion
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+                  writeOnly: true
+      responses:
+        "202":
+          description: Account deletion scheduled after the configured grace period.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeletionEnvelope"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /v1/me/subscription:
+    get:
+      tags: [Billing]
+      operationId: getSubscription
+      summary: Get subscription status and submission usage
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Server-authoritative subscription and UTC allowance windows.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubscriptionOverviewEnvelope"
+        "401":
+          $ref: "#/components/responses/Error"
+  /v1/me/subscription/sync:
+    post:
+      tags: [Billing]
+      operationId: syncSubscription
+      summary: Reconcile subscription state after purchase or restore
+      description: |
+        Fetches current RevenueCat customer information using the authenticated
+        HeatCheck user ID as the RevenueCat App User ID.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Reconciled subscription and usage state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubscriptionOverviewEnvelope"
+        "401":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
+  /v1/billing/revenuecat/webhook:
+    post:
+      tags: [Billing]
+      operationId: receiveRevenueCatWebhook
+      summary: Receive a RevenueCat lifecycle webhook
+      description: |
+        RevenueCat-only callback. The API verifies both the configured
+        Authorization value and the raw-body HMAC signature before reconciling
+        affected subscribers against RevenueCat's current customer records.
+        TRANSFER events reconcile both source and destination HeatCheck users.
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-RevenueCat-Webhook-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: "^t=[0-9]+,v1=[a-f0-9]{64}$"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [api_version, event]
+              additionalProperties: true
+              properties:
+                api_version:
+                  type: string
+                  const: "1.0"
+                event:
+                  type: object
+                  required: [id, type, app_id]
+                  additionalProperties: true
+                  properties:
+                    id:
+                      type: string
+                    type:
+                      type: string
+                    app_id:
+                      type: string
+                    app_user_id:
+                      type: string
+                      format: uuid
+                    transferred_from:
+                      type: array
+                      items:
+                        type: string
+                      description: App User IDs losing access in a TRANSFER event.
+                    transferred_to:
+                      type: array
+                      items:
+                        type: string
+                      description: App User IDs receiving access in a TRANSFER event.
+      responses:
+        "200":
+          description: Webhook accepted, ignored, or already processed.
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /v1/me/email-verification:
+    post:
+      tags: [Authentication]
+      operationId: resendEmailVerification
+      summary: Resend email verification
+      security:
+        - bearerAuth: []
+      responses:
+        "202":
+          description: Verification email queued.
+        "204":
+          description: Email was already verified.
+        "401":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+  /v1/me/sessions:
+    get:
+      tags: [Authentication]
+      operationId: listSessions
+      summary: List active account sessions
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Active refresh-token families.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionListEnvelope"
+        "401":
+          $ref: "#/components/responses/Error"
+    delete:
+      tags: [Authentication]
+      operationId: revokeAllSessions
+      summary: Revoke all account sessions
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: All refresh-token families revoked.
+  /v1/me/sessions/{sessionID}:
+    parameters:
+      - $ref: "#/components/parameters/SessionID"
+    delete:
+      tags: [Authentication]
+      operationId: revokeSession
+      summary: Revoke one account session
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Session revoked.
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/me/exports:
+    post:
+      tags: [Accounts]
+      operationId: createAccountExport
+      summary: Request an account export
+      security:
+        - bearerAuth: []
+      responses:
+        "202":
+          description: Export queued, or existing active export returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountExportEnvelope"
+        "403":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+  /v1/me/exports/{exportID}:
+    parameters:
+      - $ref: "#/components/parameters/ExportID"
+    get:
+      tags: [Accounts]
+      operationId: getAccountExport
+      summary: Get account export status
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Export status and a short-lived download URL when ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountExportEnvelope"
+        "404":
+          $ref: "#/components/responses/Error"
+  /v1/me/deletion:
+    get:
+      tags: [Accounts]
+      operationId: getAccountDeletion
+      summary: Get pending deletion status
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Pending deletion schedule.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeletionEnvelope"
+        "404":
+          $ref: "#/components/responses/Error"
+    delete:
+      tags: [Accounts]
+      operationId: cancelAccountDeletion
+      summary: Cancel account deletion
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Pending account deletion cancelled.
+        "404":
+          $ref: "#/components/responses/Error"
   /v1/me/policy-acceptances:
     post:
       tags: [Policies]
       operationId: acceptPolicies
+      summary: Accept current policy versions
       security:
         - bearerAuth: []
       requestBody:
@@ -249,6 +602,7 @@ paths:
     get:
       tags: [Challenges]
       operationId: listChallenges
+      summary: List available challenges
       security:
         - {}
         - bearerAuth: []
@@ -271,6 +625,7 @@ paths:
     get:
       tags: [Challenges]
       operationId: getDailyChallenge
+      summary: Get the current daily challenge
       responses:
         "200":
           description: Active daily challenge.
@@ -286,6 +641,7 @@ paths:
     get:
       tags: [Challenges]
       operationId: getChallenge
+      summary: Get a challenge
       security:
         - {}
         - bearerAuth: []
@@ -304,6 +660,7 @@ paths:
     get:
       tags: [Submissions]
       operationId: listChallengeSubmissions
+      summary: List challenge submissions
       security:
         - {}
         - bearerAuth: []
@@ -325,6 +682,7 @@ paths:
     post:
       tags: [Submissions]
       operationId: createSubmission
+      summary: Submit a proof clip
       security:
         - bearerAuth: []
       requestBody:
@@ -350,16 +708,44 @@ paths:
                 $ref: "#/components/schemas/SubmissionEnvelope"
         "401":
           $ref: "#/components/responses/Error"
+        "402":
+          $ref: "#/components/responses/Error"
         "409":
           $ref: "#/components/responses/Error"
         "422":
           $ref: "#/components/responses/Error"
         "428":
           $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+  /v1/challenges/{challengeID}/leaderboard:
+    parameters:
+      - $ref: "#/components/parameters/ChallengeID"
+    get:
+      tags: [Submissions]
+      operationId: getChallengeLeaderboard
+      summary: Get a challenge leaderboard
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Public verified submissions with rank positions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaderboardEnvelope"
   /v1/uploads:
     post:
       tags: [Media]
       operationId: createUpload
+      summary: Create a signed media upload
+      description: |
+        Requires an active Pro entitlement and atomically reserves both the
+        account allowance and platform-wide daily processing capacity.
       security:
         - bearerAuth: []
       requestBody:
@@ -386,7 +772,11 @@ paths:
                 $ref: "#/components/schemas/UploadInstructionEnvelope"
         "401":
           $ref: "#/components/responses/Error"
+        "402":
+          $ref: "#/components/responses/Error"
         "422":
+          $ref: "#/components/responses/Error"
+        "429":
           $ref: "#/components/responses/Error"
         "428":
           $ref: "#/components/responses/Error"
@@ -396,6 +786,7 @@ paths:
     post:
       tags: [Media]
       operationId: completeUpload
+      summary: Complete a media upload
       security:
         - bearerAuth: []
       responses:
@@ -411,12 +802,15 @@ paths:
           $ref: "#/components/responses/Error"
         "422":
           $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
   /v1/submissions/{submissionID}:
     parameters:
       - $ref: "#/components/parameters/SubmissionID"
     get:
       tags: [Submissions]
       operationId: getSubmission
+      summary: Get a submission
       security:
         - {}
         - bearerAuth: []
@@ -429,12 +823,30 @@ paths:
                 $ref: "#/components/schemas/SubmissionEnvelope"
         "404":
           $ref: "#/components/responses/Error"
+  /v1/submissions/{submissionID}/share-card.png:
+    parameters:
+      - $ref: "#/components/parameters/SubmissionID"
+    get:
+      tags: [Submissions]
+      operationId: getSubmissionShareCard
+      summary: Get a vertical share card
+      responses:
+        "200":
+          description: Rendered 1080 by 1920 share card.
+          content:
+            image/png:
+              schema:
+                type: string
+                contentEncoding: binary
+        "404":
+          $ref: "#/components/responses/Error"
   /v1/submissions/{submissionID}/vote:
     parameters:
       - $ref: "#/components/parameters/SubmissionID"
     put:
       tags: [Submissions]
       operationId: upsertVote
+      summary: Create or update a style vote
       security:
         - bearerAuth: []
       requestBody:
@@ -460,12 +872,15 @@ paths:
           $ref: "#/components/responses/Error"
         "428":
           $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
   /v1/users/{userID}:
     parameters:
       - $ref: "#/components/parameters/UserID"
     get:
       tags: [Submissions]
       operationId: getPublicUser
+      summary: Get a public user profile
       responses:
         "200":
           description: Public profile.
@@ -481,6 +896,7 @@ paths:
     put:
       tags: [Safety]
       operationId: blockUser
+      summary: Block a user
       security:
         - bearerAuth: []
       responses:
@@ -488,9 +904,12 @@ paths:
           description: User blocked.
         "404":
           $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
     delete:
       tags: [Safety]
       operationId: unblockUser
+      summary: Unblock a user
       security:
         - bearerAuth: []
       responses:
@@ -498,10 +917,13 @@ paths:
           description: User unblocked.
         "404":
           $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
   /v1/reports:
     post:
       tags: [Safety]
       operationId: createReport
+      summary: Report content or an account
       security:
         - bearerAuth: []
       requestBody:
@@ -519,6 +941,8 @@ paths:
                 $ref: "#/components/schemas/ReportEnvelope"
         "409":
           $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
         "422":
           $ref: "#/components/responses/Error"
         "428":
@@ -527,6 +951,7 @@ paths:
     post:
       tags: [Copyright]
       operationId: createCopyrightNotice
+      summary: Submit a copyright notice
       requestBody:
         required: true
         content:
@@ -550,6 +975,7 @@ paths:
     post:
       tags: [Copyright]
       operationId: createCopyrightCounterNotice
+      summary: Submit a copyright counter-notice
       security:
         - bearerAuth: []
       requestBody:
@@ -569,12 +995,15 @@ paths:
           $ref: "#/components/responses/Error"
         "409":
           $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
   /v1/moderation/actions/{actionID}/appeals:
     parameters:
       - $ref: "#/components/parameters/ActionID"
     post:
       tags: [Safety]
       operationId: createAppeal
+      summary: Appeal a moderation action
       security:
         - bearerAuth: []
       requestBody:
@@ -600,10 +1029,13 @@ paths:
           $ref: "#/components/responses/Error"
         "409":
           $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
   /v1/admin/challenges:
     post:
       tags: [Administration]
       operationId: adminCreateChallenge
+      summary: Create a challenge
       security:
         - bearerAuth: []
       requestBody:
@@ -625,6 +1057,7 @@ paths:
     get:
       tags: [Administration]
       operationId: adminListSubmissions
+      summary: List the submission review queue
       security:
         - bearerAuth: []
       parameters:
@@ -649,6 +1082,7 @@ paths:
     put:
       tags: [Administration]
       operationId: adminUpdateVerification
+      summary: Record a manual verification decision
       security:
         - bearerAuth: []
       requestBody:
@@ -676,6 +1110,7 @@ paths:
     get:
       tags: [Administration]
       operationId: adminListReports
+      summary: List the report queue
       security:
         - bearerAuth: []
       parameters:
@@ -699,6 +1134,7 @@ paths:
     post:
       tags: [Administration]
       operationId: adminDismissReport
+      summary: Dismiss a report
       security:
         - bearerAuth: []
       requestBody:
@@ -724,6 +1160,7 @@ paths:
     post:
       tags: [Administration]
       operationId: adminCreateModerationAction
+      summary: Apply a moderation action
       security:
         - bearerAuth: []
       requestBody:
@@ -743,6 +1180,7 @@ paths:
     get:
       tags: [Administration]
       operationId: adminListAppeals
+      summary: List moderation appeals
       security:
         - bearerAuth: []
       parameters:
@@ -766,6 +1204,7 @@ paths:
     put:
       tags: [Administration]
       operationId: adminReviewAppeal
+      summary: Review a moderation appeal
       security:
         - bearerAuth: []
       requestBody:
@@ -794,6 +1233,7 @@ paths:
     get:
       tags: [Administration]
       operationId: adminListCopyrightNotices
+      summary: List copyright notices
       security:
         - bearerAuth: []
       parameters:
@@ -817,6 +1257,7 @@ paths:
     put:
       tags: [Administration]
       operationId: adminReviewCopyrightNotice
+      summary: Review a copyright notice
       security:
         - bearerAuth: []
       requestBody:
@@ -848,6 +1289,7 @@ paths:
     get:
       tags: [Administration]
       operationId: adminListAuditEvents
+      summary: List audit events
       security:
         - bearerAuth: []
       parameters:
@@ -864,6 +1306,7 @@ paths:
     post:
       tags: [Administration]
       operationId: adminPublishPolicy
+      summary: Publish a policy version
       security:
         - bearerAuth: []
       requestBody:
@@ -965,6 +1408,20 @@ components:
       schema:
         type: string
         format: uuid
+    SessionID:
+      name: sessionID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ExportID:
+      name: exportID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
   requestBodies:
     RefreshToken:
       required: true
@@ -975,6 +1432,17 @@ components:
             required: [refresh_token]
             properties:
               refresh_token:
+                type: string
+                writeOnly: true
+    OpaqueToken:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [token]
+            properties:
+              token:
                 type: string
                 writeOnly: true
   responses:
@@ -1075,13 +1543,198 @@ components:
               enum: [user, moderator, admin]
             status:
               type: string
-              enum: [active, suspended, deleted]
+              enum: [active, suspended, deletion_pending, deleted]
+            email_verified_at:
+              type: [string, "null"]
+              format: date-time
     PublicUserEnvelope:
       type: object
       required: [data]
       properties:
         data:
-          $ref: "#/components/schemas/PublicUser"
+          type: object
+          required: [user, stats]
+          properties:
+            user:
+              $ref: "#/components/schemas/PublicUser"
+            stats:
+              $ref: "#/components/schemas/PublicUserStats"
+    PublicUserStats:
+      type: object
+      required: [submission_count, challenge_wins, current_streak, best_streak, average_score]
+      properties:
+        submission_count:
+          type: integer
+        challenge_wins:
+          type: integer
+        current_streak:
+          type: integer
+        best_streak:
+          type: integer
+        average_score:
+          type: number
+          format: double
+    Session:
+      type: object
+      required: [id, user_agent, created_at, expires_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_agent:
+          type: string
+        ip_address:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: [string, "null"]
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+    SessionListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Session"
+    AccountExport:
+      type: object
+      required: [id, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending, processing, ready, failed, expired]
+        download_url:
+          type: string
+          format: uri
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+        error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+    AccountExportEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/AccountExport"
+    Subscription:
+      type: object
+      required:
+        - tier
+        - entitlement_id
+        - status
+        - active
+        - will_renew
+      properties:
+        tier:
+          type: string
+          enum: [none, pro]
+        provider:
+          type: string
+          enum: [revenuecat]
+        entitlement_id:
+          type: string
+        product_id:
+          type: string
+        store:
+          type: string
+        environment:
+          type: string
+          enum: [production, sandbox, unknown]
+        status:
+          type: string
+          enum: [inactive, active, canceled, billing_issue, expired]
+        active:
+          type: boolean
+        will_renew:
+          type: boolean
+        current_period_start:
+          type: [string, "null"]
+          format: date-time
+        current_period_end:
+          type: [string, "null"]
+          format: date-time
+        management_url:
+          type: string
+          format: uri
+        updated_at:
+          type: string
+          format: date-time
+    SubscriptionUsage:
+      type: object
+      required:
+        - daily_limit
+        - daily_used
+        - daily_remaining
+        - daily_resets_at
+        - monthly_limit
+        - monthly_used
+        - monthly_remaining
+        - monthly_resets_at
+      properties:
+        daily_limit:
+          type: integer
+        daily_used:
+          type: integer
+        daily_remaining:
+          type: integer
+        daily_resets_at:
+          type: string
+          format: date-time
+        monthly_limit:
+          type: integer
+        monthly_used:
+          type: integer
+        monthly_remaining:
+          type: integer
+        monthly_resets_at:
+          type: string
+          format: date-time
+    SubscriptionOverviewEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [app_user_id, subscription, usage]
+          properties:
+            app_user_id:
+              type: string
+              format: uuid
+              description: Exact App User ID the Flutter RevenueCat SDK must use.
+            subscription:
+              $ref: "#/components/schemas/Subscription"
+            usage:
+              $ref: "#/components/schemas/SubscriptionUsage"
+    DeletionEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [status, execute_after]
+          properties:
+            status:
+              type: string
+              const: deletion_pending
+            execute_after:
+              type: string
+              format: date-time
     AuthTokens:
       type: object
       required:
@@ -1282,6 +1935,9 @@ components:
         clip_url:
           type: string
           format: uri
+        thumbnail_url:
+          type: string
+          format: uri
         caption:
           type: string
         verification_status:
@@ -1320,6 +1976,25 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Submission"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    LeaderboardEntry:
+      type: object
+      required: [rank, submission]
+      properties:
+        rank:
+          type: integer
+          minimum: 1
+        submission:
+          $ref: "#/components/schemas/Submission"
+    LeaderboardEnvelope:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/LeaderboardEntry"
         pagination:
           $ref: "#/components/schemas/Pagination"
     CreateReport:

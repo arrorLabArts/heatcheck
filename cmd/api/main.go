@@ -11,10 +11,12 @@ import (
 	"time"
 
 	"github.com/arrorLabArts/heatcheck/internal/auth"
+	"github.com/arrorLabArts/heatcheck/internal/billing"
 	"github.com/arrorLabArts/heatcheck/internal/config"
 	"github.com/arrorLabArts/heatcheck/internal/database"
 	"github.com/arrorLabArts/heatcheck/internal/httpapi"
 	"github.com/arrorLabArts/heatcheck/internal/media"
+	"github.com/arrorLabArts/heatcheck/internal/securedata"
 	"github.com/arrorLabArts/heatcheck/internal/store"
 )
 
@@ -68,15 +70,46 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	dataStore := store.New(pool)
+	dataCipher, err := securedata.New(cfg.DataEncryptionKey)
+	if err != nil {
+		return err
+	}
+	dataStore := store.New(pool, store.WithCipher(dataCipher))
 	authManager := auth.NewManager(cfg.JWTSecret, cfg.AccessTokenTTL)
-	api := httpapi.New(dataStore, authManager, mediaStorage, logger, httpapi.Config{
-		AllowedOrigins:  cfg.AllowedOrigins,
-		BootstrapAdmins: cfg.BootstrapAdmins,
-		MaxUploadBytes:  cfg.MaxUploadBytes,
-		UploadURLTTL:    cfg.UploadURLTTL,
-		RefreshTokenTTL: cfg.RefreshTokenTTL,
-		MinimumAge:      cfg.MinimumAge,
+	billingClient, err := billing.New(billing.Config{
+		BaseURL:              cfg.RevenueCatBaseURL,
+		SecretAPIKey:         cfg.RevenueCatSecretAPIKey,
+		EntitlementID:        cfg.RevenueCatEntitlementID,
+		AppID:                cfg.RevenueCatAppID,
+		WebhookAuthorization: cfg.RevenueCatWebhookAuthorization,
+		WebhookSigningSecret: cfg.RevenueCatWebhookSigningSecret,
+		WebhookTolerance:     cfg.RevenueCatWebhookTolerance,
+		AllowSandbox:         cfg.RevenueCatAllowSandbox,
+		Timeout:              cfg.RevenueCatTimeout,
+	})
+	if err != nil {
+		return err
+	}
+	api := httpapi.New(dataStore, authManager, mediaStorage, billingClient, logger, httpapi.Config{
+		AllowedOrigins:    cfg.AllowedOrigins,
+		TrustedProxyCIDRs: cfg.TrustedProxyCIDRs,
+		BootstrapAdmins:   cfg.BootstrapAdmins,
+		MaxUploadBytes:    cfg.MaxUploadBytes,
+		UploadURLTTL:      cfg.UploadURLTTL,
+		RefreshTokenTTL:   cfg.RefreshTokenTTL,
+		EmailTokenTTL:     cfg.EmailTokenTTL,
+		PasswordResetTTL:  cfg.PasswordResetTTL,
+		AccountDeleteWait: cfg.AccountDeleteWait,
+		PublicAppURL:      cfg.PublicAppURL,
+		SafetyAlertEmail:  cfg.SafetyAlertEmail,
+		LegalAlertEmail:   cfg.LegalAlertEmail,
+		MinimumAge:        cfg.MinimumAge,
+		RequireWorker:     cfg.RequireWorker,
+		WorkerStaleAfter:  cfg.WorkerStaleAfter,
+		ReservationTTL:    cfg.ReservationTTL,
+		ProDailyLimit:     cfg.ProDailySubmissionLimit,
+		ProMonthlyLimit:   cfg.ProMonthlySubmissionLimit,
+		GlobalDailyLimit:  cfg.GlobalDailySubmissionLimit,
 	})
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,

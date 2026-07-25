@@ -1,13 +1,14 @@
 module github.com/arrorLabArts/heatcheck
 
-go 1.25.3
+go 1.25.12
 
 require (
 	github.com/go-chi/chi/v5 v5.2.3
 	github.com/golang-jwt/jwt/v5 v5.3.0
-	github.com/jackc/pgx/v5 v5.7.6
+	github.com/jackc/pgx/v5 v5.9.2
 	github.com/minio/minio-go/v7 v7.0.95
-	golang.org/x/crypto v0.41.0
+	golang.org/x/crypto v0.50.0
+	golang.org/x/image v0.44.0
 )
 
 require (
@@ -25,8 +26,8 @@ require (
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/tinylib/msgp v1.3.0 // indirect
-	golang.org/x/net v0.42.0 // indirect
-	golang.org/x/sync v0.16.0 // indirect
-	golang.org/x/sys v0.35.0 // indirect
-	golang.org/x/text v0.28.0 // indirect
+	golang.org/x/net v0.53.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 )

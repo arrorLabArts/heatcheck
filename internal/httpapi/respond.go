@@ -61,6 +61,19 @@ func handleStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_operation", "The operation is not valid for the resource's current state.", nil)
 	case errors.Is(err, store.ErrPolicy):
 		writeError(w, http.StatusPreconditionRequired, "policy_acceptance_required", "Current required policies must be accepted.", nil)
+	case errors.Is(err, store.ErrSubscriptionRequired):
+		writeError(w, http.StatusPaymentRequired, "subscription_required", "An active Pro subscription is required to submit clips.", nil)
+	case errors.Is(err, store.ErrUsageLimit):
+		var limitError *store.UsageLimitError
+		if errors.As(err, &limitError) {
+			writeError(w, http.StatusTooManyRequests, "submission_limit_reached", "The submission allowance has been reached.", map[string]any{
+				"period":    limitError.Period,
+				"limit":     limitError.Limit,
+				"resets_at": limitError.ResetAt,
+			})
+			return
+		}
+		writeError(w, http.StatusTooManyRequests, "submission_limit_reached", "The submission allowance has been reached.", nil)
 	case errors.Is(err, store.ErrToken):
 		writeError(w, http.StatusUnauthorized, "invalid_refresh_token", "The refresh token is invalid or expired.", nil)
 	default:

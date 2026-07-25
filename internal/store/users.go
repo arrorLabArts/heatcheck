@@ -11,14 +11,17 @@ import (
 )
 
 type CreateUserParams struct {
-	Email        string
-	PasswordHash string
-	Handle       string
-	DisplayName  string
-	DateOfBirth  time.Time
-	Role         string
-	Acceptances  []domain.PolicyAcceptance
-	IPAddress    string
+	Email                 string
+	PasswordHash          string
+	Handle                string
+	DisplayName           string
+	DateOfBirth           time.Time
+	Role                  string
+	Acceptances           []domain.PolicyAcceptance
+	IPAddress             string
+	VerificationTokenHash []byte
+	VerificationExpiresAt time.Time
+	VerificationEmail     any
 }
 
 func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (domain.User, error) {
@@ -69,7 +72,7 @@ func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (domain
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING
 			id, email, handle, display_name, date_of_birth::text,
-			role, status, created_at
+			role, status, email_verified_at, created_at
 	`,
 		strings.ToLower(params.Email),
 		params.PasswordHash,
@@ -85,6 +88,7 @@ func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (domain
 		&user.DateOfBirth,
 		&user.Role,
 		&user.Status,
+		&user.EmailVerifiedAt,
 		&user.CreatedAt,
 	)
 	if err != nil {
@@ -107,6 +111,24 @@ func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (domain
 	`, user.ID, user.ID); err != nil {
 		return domain.User{}, mapError(err)
 	}
+	if len(params.VerificationTokenHash) > 0 {
+		emailPayload, err := s.encodeEmailPayload(params.VerificationEmail)
+		if err != nil {
+			return domain.User{}, err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO email_verification_tokens (user_id, token_hash, expires_at)
+			VALUES ($1, $2, $3)
+		`, user.ID, params.VerificationTokenHash, params.VerificationExpiresAt); err != nil {
+			return domain.User{}, mapError(err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO jobs (kind, entity_id, payload, max_attempts)
+			VALUES ('email.verification', $1, $2, 8)
+		`, user.ID, emailPayload); err != nil {
+			return domain.User{}, mapError(err)
+		}
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return domain.User{}, mapError(err)
@@ -119,7 +141,7 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (domain.UserWi
 	err := s.pool.QueryRow(ctx, `
 		SELECT
 			id, email, password_hash, handle, display_name, date_of_birth::text,
-			role, status, created_at
+			role, status, email_verified_at, created_at
 		FROM users
 		WHERE email = $1 AND deleted_at IS NULL
 	`, strings.ToLower(email)).Scan(
@@ -131,6 +153,7 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (domain.UserWi
 		&user.DateOfBirth,
 		&user.Role,
 		&user.Status,
+		&user.EmailVerifiedAt,
 		&user.CreatedAt,
 	)
 	return user, mapError(err)
@@ -141,7 +164,7 @@ func (s *Store) GetUserByID(ctx context.Context, id string) (domain.User, error)
 	err := s.pool.QueryRow(ctx, `
 		SELECT
 			id, email, handle, display_name, date_of_birth::text,
-			role, status, created_at
+			role, status, email_verified_at, created_at
 		FROM users
 		WHERE id = $1 AND deleted_at IS NULL
 	`, id).Scan(
@@ -152,6 +175,7 @@ func (s *Store) GetUserByID(ctx context.Context, id string) (domain.User, error)
 		&user.DateOfBirth,
 		&user.Role,
 		&user.Status,
+		&user.EmailVerifiedAt,
 		&user.CreatedAt,
 	)
 	return user, mapError(err)
@@ -172,6 +196,59 @@ func (s *Store) GetPublicUser(ctx context.Context, id string) (domain.User, erro
 	return user, mapError(err)
 }
 
+func (s *Store) PromoteUserToAdmin(ctx context.Context, email string) (domain.User, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.User{}, mapError(err)
+	}
+	defer tx.Rollback(ctx)
+
+	var user domain.User
+	err = tx.QueryRow(ctx, `
+		UPDATE users
+		SET role = 'admin',
+		    updated_at = now()
+		WHERE email = $1
+		  AND status = 'active'
+		  AND deleted_at IS NULL
+		  AND email_verified_at IS NOT NULL
+		RETURNING
+			id, email, handle, display_name, date_of_birth::text,
+			role, status, email_verified_at, created_at
+	`, strings.ToLower(strings.TrimSpace(email))).Scan(
+		&user.ID,
+		&user.Email,
+		&user.Handle,
+		&user.DisplayName,
+		&user.DateOfBirth,
+		&user.Role,
+		&user.Status,
+		&user.EmailVerifiedAt,
+		&user.CreatedAt,
+	)
+	if err != nil {
+		return domain.User{}, mapError(err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO audit_events (
+			actor_id, action, entity_type, entity_id, metadata
+		)
+			VALUES (
+				$1::uuid,
+				'user.promoted_to_admin',
+				'user',
+				($1::uuid)::text,
+				$2::jsonb
+			)
+	`, user.ID, map[string]string{"source": "heatcheck-admin"}); err != nil {
+		return domain.User{}, mapError(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.User{}, mapError(err)
+	}
+	return user, nil
+}
+
 func (s *Store) CreateRefreshToken(
 	ctx context.Context,
 	userID string,
@@ -182,9 +259,9 @@ func (s *Store) CreateRefreshToken(
 ) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO refresh_tokens (
-			user_id, token_hash, expires_at, user_agent, ip_address
+			user_id, token_hash, expires_at, user_agent, ip_address, family_id
 		)
-		VALUES ($1, $2, $3, $4, NULLIF($5, '')::inet)
+		VALUES ($1, $2, $3, $4, NULLIF($5, '')::inet, gen_random_uuid())
 	`, userID, hash, expiresAt, userAgent, ipAddress)
 	return mapError(err)
 }
@@ -203,25 +280,39 @@ func (s *Store) RotateRefreshToken(
 	}
 	defer tx.Rollback(ctx)
 
-	var oldID, userID string
+	var oldID, userID, familyID string
+	var revokedAt *time.Time
 	err = tx.QueryRow(ctx, `
-		SELECT id, user_id
+		SELECT id, user_id, family_id, revoked_at
 		FROM refresh_tokens
-		WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
+		WHERE token_hash = $1 AND expires_at > now()
 		FOR UPDATE
-	`, oldHash).Scan(&oldID, &userID)
+	`, oldHash).Scan(&oldID, &userID, &familyID, &revokedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.User{}, ErrToken
 	}
 	if err != nil {
 		return domain.User{}, mapError(err)
 	}
+	if revokedAt != nil {
+		if _, err := tx.Exec(ctx, `
+			UPDATE refresh_tokens
+			SET revoked_at = COALESCE(revoked_at, now())
+			WHERE family_id = $1
+		`, familyID); err != nil {
+			return domain.User{}, mapError(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return domain.User{}, mapError(err)
+		}
+		return domain.User{}, ErrToken
+	}
 
 	var user domain.User
 	err = tx.QueryRow(ctx, `
 		SELECT
 			id, email, handle, display_name, date_of_birth::text,
-			role, status, created_at
+			role, status, email_verified_at, created_at
 		FROM users
 		WHERE id = $1 AND status <> 'deleted' AND deleted_at IS NULL
 	`, userID).Scan(
@@ -232,6 +323,7 @@ func (s *Store) RotateRefreshToken(
 		&user.DateOfBirth,
 		&user.Role,
 		&user.Status,
+		&user.EmailVerifiedAt,
 		&user.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -244,17 +336,17 @@ func (s *Store) RotateRefreshToken(
 	var newID string
 	err = tx.QueryRow(ctx, `
 		INSERT INTO refresh_tokens (
-			user_id, token_hash, expires_at, user_agent, ip_address
+			user_id, token_hash, expires_at, user_agent, ip_address, family_id
 		)
-		VALUES ($1, $2, $3, $4, NULLIF($5, '')::inet)
+		VALUES ($1, $2, $3, $4, NULLIF($5, '')::inet, $6)
 		RETURNING id
-	`, userID, newHash, newExpiresAt, userAgent, ipAddress).Scan(&newID)
+	`, userID, newHash, newExpiresAt, userAgent, ipAddress, familyID).Scan(&newID)
 	if err != nil {
 		return domain.User{}, mapError(err)
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE refresh_tokens
-		SET revoked_at = now(), replaced_by = $2
+		SET revoked_at = now(), replaced_by = $2, last_used_at = now()
 		WHERE id = $1
 	`, oldID, newID); err != nil {
 		return domain.User{}, mapError(err)

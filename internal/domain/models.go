@@ -12,14 +12,15 @@ const (
 )
 
 type User struct {
-	ID          string    `json:"id"`
-	Email       string    `json:"email,omitempty"`
-	Handle      string    `json:"handle"`
-	DisplayName string    `json:"display_name"`
-	DateOfBirth string    `json:"date_of_birth,omitempty"`
-	Role        string    `json:"role,omitempty"`
-	Status      string    `json:"status,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID              string     `json:"id"`
+	Email           string     `json:"email,omitempty"`
+	Handle          string     `json:"handle"`
+	DisplayName     string     `json:"display_name"`
+	DateOfBirth     string     `json:"date_of_birth,omitempty"`
+	Role            string     `json:"role,omitempty"`
+	Status          string     `json:"status,omitempty"`
+	EmailVerifiedAt *time.Time `json:"email_verified_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
 }
 
 type UserWithPassword struct {
@@ -57,15 +58,55 @@ type Challenge struct {
 }
 
 type MediaUpload struct {
-	ID           string    `json:"id"`
-	UserID       string    `json:"user_id,omitempty"`
-	ObjectKey    string    `json:"object_key,omitempty"`
-	ContentType  string    `json:"content_type"`
-	ExpectedSize int64     `json:"expected_size"`
-	ActualSize   *int64    `json:"actual_size,omitempty"`
-	Status       string    `json:"status"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID              string     `json:"id"`
+	UserID          string     `json:"user_id,omitempty"`
+	ObjectKey       string     `json:"object_key,omitempty"`
+	ContentType     string     `json:"content_type"`
+	ExpectedSize    int64      `json:"expected_size"`
+	ActualSize      *int64     `json:"actual_size,omitempty"`
+	DurationSeconds *float64   `json:"duration_seconds,omitempty"`
+	Width           *int       `json:"width,omitempty"`
+	Height          *int       `json:"height,omitempty"`
+	VideoCodec      string     `json:"video_codec,omitempty"`
+	ScannedAt       *time.Time `json:"scanned_at,omitempty"`
+	Status          string     `json:"status"`
+	ExpiresAt       time.Time  `json:"expires_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+}
+
+type Subscription struct {
+	UserID             string     `json:"-"`
+	Tier               string     `json:"tier"`
+	Provider           string     `json:"provider,omitempty"`
+	EntitlementID      string     `json:"entitlement_id"`
+	ProductID          string     `json:"product_id,omitempty"`
+	Store              string     `json:"store,omitempty"`
+	Environment        string     `json:"environment,omitempty"`
+	Status             string     `json:"status"`
+	Active             bool       `json:"active"`
+	WillRenew          bool       `json:"will_renew"`
+	CurrentPeriodStart *time.Time `json:"current_period_start,omitempty"`
+	CurrentPeriodEnd   *time.Time `json:"current_period_end,omitempty"`
+	ManagementURL      string     `json:"management_url,omitempty"`
+	SourceUpdatedAt    time.Time  `json:"-"`
+	UpdatedAt          time.Time  `json:"updated_at,omitempty"`
+}
+
+type SubscriptionUsage struct {
+	DailyLimit       int       `json:"daily_limit"`
+	DailyUsed        int       `json:"daily_used"`
+	DailyRemaining   int       `json:"daily_remaining"`
+	DailyResetsAt    time.Time `json:"daily_resets_at"`
+	MonthlyLimit     int       `json:"monthly_limit"`
+	MonthlyUsed      int       `json:"monthly_used"`
+	MonthlyRemaining int       `json:"monthly_remaining"`
+	MonthlyResetAt   time.Time `json:"monthly_resets_at"`
+}
+
+type SubscriptionOverview struct {
+	AppUserID    string            `json:"app_user_id"`
+	Subscription Subscription      `json:"subscription"`
+	Usage        SubscriptionUsage `json:"usage"`
 }
 
 type Submission struct {
@@ -75,6 +116,7 @@ type Submission struct {
 	UserHandle          string          `json:"user_handle,omitempty"`
 	MediaUploadID       string          `json:"media_upload_id,omitempty"`
 	ClipURL             string          `json:"clip_url,omitempty"`
+	ThumbnailURL        string          `json:"thumbnail_url,omitempty"`
 	Caption             string          `json:"caption"`
 	VerificationStatus  string          `json:"verification_status"`
 	VerificationDetails json.RawMessage `json:"verification_details,omitempty"`
@@ -85,6 +127,7 @@ type Submission struct {
 	CreatedAt           time.Time       `json:"created_at"`
 	UpdatedAt           time.Time       `json:"updated_at"`
 	MediaObjectKey      string          `json:"-"`
+	MediaThumbnailKey   string          `json:"-"`
 }
 
 type Report struct {
@@ -171,4 +214,46 @@ type AuditEvent struct {
 	EntityID   string          `json:"entity_id"`
 	Metadata   json.RawMessage `json:"metadata"`
 	CreatedAt  time.Time       `json:"created_at"`
+}
+
+type Job struct {
+	ID          string          `json:"id"`
+	Kind        string          `json:"kind"`
+	EntityID    *string         `json:"entity_id,omitempty"`
+	Payload     json.RawMessage `json:"payload"`
+	Attempts    int             `json:"attempts"`
+	MaxAttempts int             `json:"max_attempts"`
+}
+
+type Session struct {
+	ID         string     `json:"id"`
+	UserAgent  string     `json:"user_agent"`
+	IPAddress  string     `json:"ip_address,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+}
+
+type AccountExport struct {
+	ID          string     `json:"id"`
+	Status      string     `json:"status"`
+	DownloadURL string     `json:"download_url,omitempty"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	Error       string     `json:"error,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	ObjectKey   string     `json:"-"`
+}
+
+type PublicUserStats struct {
+	SubmissionCount int     `json:"submission_count"`
+	ChallengeWins   int     `json:"challenge_wins"`
+	CurrentStreak   int     `json:"current_streak"`
+	BestStreak      int     `json:"best_streak"`
+	AverageScore    float64 `json:"average_score"`
+}
+
+type LeaderboardEntry struct {
+	Rank       int        `json:"rank"`
+	Submission Submission `json:"submission"`
 }

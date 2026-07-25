@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -149,4 +150,50 @@ func (s *Storage) PresignedDownloadURL(
 		return "", fmt.Errorf("presign media download: %w", err)
 	}
 	return signed.String(), nil
+}
+
+func (s *Storage) Open(ctx context.Context, objectKey string) (io.ReadCloser, error) {
+	object, err := s.internalClient.GetObject(
+		ctx,
+		s.bucket,
+		objectKey,
+		minio.GetObjectOptions{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open media object: %w", err)
+	}
+	return object, nil
+}
+
+func (s *Storage) Put(
+	ctx context.Context,
+	objectKey string,
+	reader io.Reader,
+	size int64,
+	contentType string,
+) error {
+	_, err := s.internalClient.PutObject(
+		ctx,
+		s.bucket,
+		objectKey,
+		reader,
+		size,
+		minio.PutObjectOptions{ContentType: contentType},
+	)
+	if err != nil {
+		return fmt.Errorf("put media object: %w", err)
+	}
+	return nil
+}
+
+func (s *Storage) Remove(ctx context.Context, objectKey string) error {
+	if err := s.internalClient.RemoveObject(
+		ctx,
+		s.bucket,
+		objectKey,
+		minio.RemoveObjectOptions{},
+	); err != nil {
+		return fmt.Errorf("remove media object: %w", err)
+	}
+	return nil
 }

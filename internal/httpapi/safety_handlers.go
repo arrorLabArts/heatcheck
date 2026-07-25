@@ -1,10 +1,13 @@
 package httpapi
 
 import (
+	"fmt"
+	"html"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/arrorLabArts/heatcheck/internal/mailer"
 	"github.com/arrorLabArts/heatcheck/internal/store"
 	"github.com/go-chi/chi/v5"
 )
@@ -61,6 +64,23 @@ func (a *API) createReport(w http.ResponseWriter, r *http.Request) {
 		priority = "high"
 	}
 	user, _ := userFromContext(r.Context())
+	var alert any
+	if priority == "urgent" {
+		textBody := fmt.Sprintf(
+			"Urgent HeatCheck safety report\n\nReporter: %s\nTarget: %s/%s\nReason: %s\nDetails: %s",
+			user.ID,
+			request.TargetType,
+			request.TargetID,
+			request.Reason,
+			request.Details,
+		)
+		alert = mailer.Message{
+			To:       a.safetyAlertEmail,
+			Subject:  "Urgent HeatCheck safety report",
+			TextBody: textBody,
+			HTMLBody: "<pre>" + html.EscapeString(textBody) + "</pre>",
+		}
+	}
 	report, err := a.store.CreateReport(r.Context(), store.CreateReportParams{
 		ReporterID: user.ID,
 		TargetType: request.TargetType,
@@ -68,6 +88,7 @@ func (a *API) createReport(w http.ResponseWriter, r *http.Request) {
 		Reason:     request.Reason,
 		Details:    request.Details,
 		Priority:   priority,
+		AlertEmail: alert,
 	})
 	if err != nil {
 		handleStoreError(w, err)
@@ -163,6 +184,35 @@ func (a *API) createCopyrightNotice(w http.ResponseWriter, r *http.Request) {
 		GoodFaith:       request.GoodFaith,
 		Accuracy:        request.Accuracy,
 		Signature:       request.Signature,
+		Notifications: []store.EmailNotification{
+			{
+				Kind: "email.copyright_receipt",
+				Payload: mailer.Message{
+					To:       request.ClaimantEmail,
+					Subject:  "HeatCheck copyright notice received",
+					TextBody: "HeatCheck received your copyright notice. Our legal moderation queue will review it and contact you if more information is required.",
+					HTMLBody: "<p>HeatCheck received your copyright notice.</p><p>Our legal moderation queue will review it and contact you if more information is required.</p>",
+				},
+			},
+			{
+				Kind: "email.legal_alert",
+				Payload: mailer.Message{
+					To:      a.legalAlertEmail,
+					Subject: "New HeatCheck copyright notice",
+					TextBody: fmt.Sprintf(
+						"Claimant: %s <%s>\nInfringing URL: %s\nCopyrighted work: %s",
+						request.ClaimantName,
+						request.ClaimantEmail,
+						request.InfringingURL,
+						request.CopyrightedWork,
+					),
+					HTMLBody: "<p><strong>Claimant:</strong> " + html.EscapeString(request.ClaimantName) +
+						" &lt;" + html.EscapeString(request.ClaimantEmail) + "&gt;</p><p><strong>Infringing URL:</strong> " +
+						html.EscapeString(request.InfringingURL) + "</p><p><strong>Copyrighted work:</strong> " +
+						html.EscapeString(request.CopyrightedWork) + "</p>",
+				},
+			},
+		},
 	})
 	if err != nil {
 		handleStoreError(w, err)
@@ -225,8 +275,20 @@ func (a *API) createCounterNotice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, _ := userFromContext(r.Context())
+	noticeID := chi.URLParam(r, "noticeID")
+	counterLink := a.publicAppURL + "/copyright/notices/" + url.PathEscape(noticeID)
+	legalBody := fmt.Sprintf(
+		"HeatCheck copyright counter-notice received\n\nNotice: %s\nUploader: %s\nName: %s\nEmail: %s\nAddress: %s\nPhone: %s\nReview: %s",
+		noticeID,
+		user.ID,
+		request.FullName,
+		request.Email,
+		request.Address,
+		request.Phone,
+		counterLink,
+	)
 	counter, err := a.store.CreateCounterNotice(r.Context(), store.CreateCounterNoticeParams{
-		NoticeID:         chi.URLParam(r, "noticeID"),
+		NoticeID:         noticeID,
 		UserID:           user.ID,
 		FullName:         request.FullName,
 		Address:          request.Address,
@@ -235,6 +297,26 @@ func (a *API) createCounterNotice(w http.ResponseWriter, r *http.Request) {
 		GoodFaith:        request.GoodFaith,
 		ConsentToProcess: request.ConsentToProcess,
 		Signature:        request.Signature,
+		Notifications: []store.EmailNotification{
+			{
+				Kind: "email.copyright_counter_receipt",
+				Payload: mailer.Message{
+					To:       request.Email,
+					Subject:  "HeatCheck counter-notice received",
+					TextBody: "HeatCheck received your copyright counter-notice. The legal moderation team will review it and contact you if further information is required.",
+					HTMLBody: "<p>HeatCheck received your copyright counter-notice.</p><p>The legal moderation team will review it and contact you if further information is required.</p>",
+				},
+			},
+			{
+				Kind: "email.legal_alert",
+				Payload: mailer.Message{
+					To:       a.legalAlertEmail,
+					Subject:  "HeatCheck copyright counter-notice received",
+					TextBody: legalBody,
+					HTMLBody: "<pre>" + html.EscapeString(legalBody) + "</pre>",
+				},
+			},
+		},
 	})
 	if err != nil {
 		handleStoreError(w, err)

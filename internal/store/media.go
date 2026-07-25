@@ -24,6 +24,11 @@ func scanMediaUpload(row scanner) (domain.MediaUpload, error) {
 		&upload.ContentType,
 		&upload.ExpectedSize,
 		&upload.ActualSize,
+		&upload.DurationSeconds,
+		&upload.Width,
+		&upload.Height,
+		&upload.VideoCodec,
+		&upload.ScannedAt,
 		&upload.Status,
 		&upload.ExpiresAt,
 		&upload.CreatedAt,
@@ -42,7 +47,8 @@ func (s *Store) CreateMediaUpload(
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING
 			id, user_id, object_key, content_type, expected_size,
-			actual_size, status, expires_at, created_at
+			actual_size, duration_seconds, width, height, COALESCE(video_codec, ''), scanned_at,
+			status, expires_at, created_at
 	`,
 		params.UserID,
 		params.ObjectKey,
@@ -60,7 +66,8 @@ func (s *Store) GetMediaUpload(
 	return scanMediaUpload(s.pool.QueryRow(ctx, `
 		SELECT
 			id, user_id, object_key, content_type, expected_size,
-			actual_size, status, expires_at, created_at
+			actual_size, duration_seconds, width, height, COALESCE(video_codec, ''), scanned_at,
+			status, expires_at, created_at
 		FROM media_uploads
 		WHERE id = $1 AND user_id = $2
 	`, id, userID))
@@ -82,6 +89,60 @@ func (s *Store) CompleteMediaUpload(
 		  AND expected_size = $3
 		RETURNING
 			id, user_id, object_key, content_type, expected_size,
-			actual_size, status, expires_at, created_at
+			actual_size, duration_seconds, width, height, COALESCE(video_codec, ''), scanned_at,
+			status, expires_at, created_at
 	`, id, userID, actualSize))
+}
+
+func (s *Store) UpdateMediaInspection(
+	ctx context.Context,
+	id string,
+	durationSeconds float64,
+	width int,
+	height int,
+	videoCodec string,
+	scannedAt time.Time,
+	retainedUntil time.Time,
+	processedObjectKey string,
+	thumbnailObjectKey string,
+) error {
+	command, err := s.pool.Exec(ctx, `
+		UPDATE media_uploads
+		SET duration_seconds = $2,
+		    width = $3,
+		    height = $4,
+		    video_codec = $5,
+		    scanned_at = $6,
+		    retained_until = $7,
+		    processed_object_key = $8,
+		    thumbnail_object_key = $9,
+		    updated_at = now()
+		WHERE id = $1
+	`,
+		id,
+		durationSeconds,
+		width,
+		height,
+		videoCodec,
+		scannedAt,
+		retainedUntil,
+		processedObjectKey,
+		thumbnailObjectKey,
+	)
+	if err != nil {
+		return mapError(err)
+	}
+	if command.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) RejectMediaUpload(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE media_uploads
+		SET status = 'rejected', updated_at = now()
+		WHERE id = $1
+	`, id)
+	return mapError(err)
 }
