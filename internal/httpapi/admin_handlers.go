@@ -28,7 +28,7 @@ func (a *API) listReports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"data": reports,
+		"data": jsonSlice(reports),
 		"pagination": map[string]int{
 			"limit": limit, "offset": offset,
 		},
@@ -150,7 +150,7 @@ func (a *API) listModerationSubmissions(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"data": submissions,
+		"data": jsonSlice(submissions),
 		"pagination": map[string]int{
 			"limit": limit, "offset": offset,
 		},
@@ -211,7 +211,7 @@ func (a *API) listAppeals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"data": appeals,
+		"data": jsonSlice(appeals),
 		"pagination": map[string]int{
 			"limit": limit, "offset": offset,
 		},
@@ -270,7 +270,7 @@ func (a *API) listCopyrightNotices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"data": notices,
+		"data": jsonSlice(notices),
 		"pagination": map[string]int{
 			"limit": limit, "offset": offset,
 		},
@@ -388,7 +388,7 @@ func (a *API) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"data": events,
+		"data": jsonSlice(events),
 		"pagination": map[string]int{
 			"limit": limit, "offset": offset,
 		},

@@ -43,7 +43,7 @@ func (a *API) listPolicies(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": policies})
+	writeJSON(w, http.StatusOK, map[string]any{"data": jsonSlice(policies)})
 }
 
 func (a *API) getPolicy(w http.ResponseWriter, r *http.Request) {

@@ -193,7 +193,7 @@ services:
       minio-init:
         condition: service_completed_successfully
       clamav:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   postgres-data:

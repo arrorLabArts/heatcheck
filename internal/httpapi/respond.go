@@ -28,6 +28,13 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+func jsonSlice[T any](values []T) []T {
+	if values == nil {
+		return []T{}
+	}
+	return values
+}
+
 func writeError(w http.ResponseWriter, status int, code, message string, details any) {
 	writeJSON(w, status, errorEnvelope{Error: apiError{
 		Code:    code,

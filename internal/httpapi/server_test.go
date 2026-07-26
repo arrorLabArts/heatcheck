@@ -70,6 +70,18 @@ func TestOpenAPISpecIsServed(t *testing.T) {
 	}
 }
 
+func TestJSONSliceEncodesEmptyCollectionsAsArrays(t *testing.T) {
+	response := httptest.NewRecorder()
+
+	writeJSON(response, http.StatusOK, map[string]any{
+		"data": jsonSlice([]string(nil)),
+	})
+
+	if response.Body.String() != "{\"data\":[]}\n" {
+		t.Fatalf("body = %s, want empty JSON array", response.Body.String())
+	}
+}
+
 func TestRouterOperationsMatchOpenAPI(t *testing.T) {
 	api := New(nil, nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{})
 	mux, ok := api.Router().(*chi.Mux)

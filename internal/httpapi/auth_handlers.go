@@ -243,7 +243,7 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": map[string]any{
 			"user":                       user,
-			"missing_policy_acceptances": missing,
+			"missing_policy_acceptances": jsonSlice(missing),
 		},
 	})
 }
@@ -388,7 +388,7 @@ func (a *API) listSessions(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": sessions})
+	writeJSON(w, http.StatusOK, map[string]any{"data": jsonSlice(sessions)})
 }
 
 func (a *API) revokeSession(w http.ResponseWriter, r *http.Request) {

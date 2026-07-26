@@ -30,7 +30,7 @@ func (a *API) listChallenges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"data": challenges,
+		"data": jsonSlice(challenges),
 		"pagination": map[string]int{
 			"limit": limit, "offset": offset,
 		},
@@ -365,7 +365,7 @@ func (a *API) listSubmissions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"data": submissions,
+		"data": jsonSlice(submissions),
 		"pagination": map[string]int{
 			"limit": limit, "offset": offset,
 		},

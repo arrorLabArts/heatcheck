@@ -3,6 +3,13 @@
 Go API and asynchronous worker for HeatCheck's gameplay challenges, proof clips,
 OpenAI-assisted verification, voting, moderation, and account/legal workflows.
 
+## Documentation
+
+- [Flutter product and frontend guide](docs/FRONTEND_GUIDE.md)
+- [OpenAPI 3.1 contract](api/openapi.yaml)
+- Production API: `https://heatcheck.dogi.watch`
+- Production OpenAPI: `https://heatcheck.dogi.watch/openapi.yaml`
+
 ## Included
 
 - Argon2id email/password registration, verification, password reset, and an 18+ age gate by default
