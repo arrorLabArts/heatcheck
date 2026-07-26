@@ -81,6 +81,21 @@ docker compose run --rm --no-deps \
 The command does not create users and refuses inactive, deleted, or unverified
 accounts.
 
+### Pre-Launch Sample Challenge
+
+Migration `000004_prelaunch_sample_challenge.sql` publishes a temporary
+prelaunch warm-up so the production Today screen is usable before an
+administrator has built the challenge calendar. It asks players for footage
+they record themselves in GTA V or GTA Online; it explicitly prohibits GTA VI
+trailers, promotional footage, leaks, mods, cutscenes, and clips copied from
+other creators.
+
+The sample starts when the migration is deployed, runs for at most 14 days, and
+is not inserted after GTA VI's announced November 19, 2026 launch date. It is a
+bootstrap sample, not an automatic challenge scheduler. Administrators remain
+responsible for publishing subsequent challenges through
+`POST /v1/admin/challenges`.
+
 ### RevenueCat
 
 HeatCheck is free to browse, but an active RevenueCat `pro` entitlement is

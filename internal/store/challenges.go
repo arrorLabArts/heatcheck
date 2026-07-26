@@ -48,7 +48,8 @@ func (s *Store) CreateChallenge(ctx context.Context, params CreateChallengeParam
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING
 			id, slug, title, description, rules, status, visibility,
-			starts_at, ends_at, created_by, created_at, updated_at
+			starts_at, ends_at, COALESCE(created_by::text, ''),
+			created_at, updated_at
 	`,
 		params.Slug,
 		params.Title,
@@ -67,7 +68,8 @@ func (s *Store) GetChallenge(ctx context.Context, id string) (domain.Challenge, 
 	return scanChallenge(s.pool.QueryRow(ctx, `
 		SELECT
 			id, slug, title, description, rules, status, visibility,
-			starts_at, ends_at, created_by, created_at, updated_at
+			starts_at, ends_at, COALESCE(created_by::text, ''),
+			created_at, updated_at
 		FROM challenges
 		WHERE id = $1
 	`, id))
@@ -77,7 +79,8 @@ func (s *Store) GetDailyChallenge(ctx context.Context, now time.Time) (domain.Ch
 	return scanChallenge(s.pool.QueryRow(ctx, `
 		SELECT
 			id, slug, title, description, rules, status, visibility,
-			starts_at, ends_at, created_by, created_at, updated_at
+			starts_at, ends_at, COALESCE(created_by::text, ''),
+			created_at, updated_at
 		FROM challenges
 		WHERE status = 'published'
 		  AND visibility = 'public'
@@ -97,7 +100,8 @@ func (s *Store) ListChallenges(
 	rows, err := s.pool.Query(ctx, `
 		SELECT
 			id, slug, title, description, rules, status, visibility,
-			starts_at, ends_at, created_by, created_at, updated_at
+			starts_at, ends_at, COALESCE(created_by::text, ''),
+			created_at, updated_at
 		FROM challenges
 		WHERE $1 OR (visibility = 'public' AND status IN ('published', 'closed'))
 		ORDER BY starts_at DESC

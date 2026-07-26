@@ -1802,6 +1802,7 @@ components:
         created_by:
           type: string
           format: uuid
+          description: Human administrator author. Omitted for system-seeded challenges.
         created_at:
           type: string
           format: date-time
